@@ -45,6 +45,7 @@ class Market(BaseModel):
 
     @property
     def key(self) -> str:
+        """Returns a globally unique id of the form venue:venue_market_id."""
         return f"{self.venue}:{self.venue_market_id}"
 
 
@@ -70,8 +71,10 @@ class BookSnapshot(BaseModel):
 
     @property
     def best_yes_bid(self) -> PriceLevel | None:
+        """Returns the highest YES bid level, or None when there are no bids."""
         return self.yes_bids[0] if self.yes_bids else None
 
     @property
     def best_yes_ask(self) -> PriceLevel | None:
+        """Returns the lowest YES ask level, or None when there are no asks."""
         return self.yes_asks[0] if self.yes_asks else None

@@ -8,6 +8,7 @@ class TokenBucket:
     """Async token bucket allowing `rate` acquisitions per second with burst `capacity`."""
 
     def __init__(self, rate: float, capacity: float | None = None) -> None:
+        """Creates a full bucket that refills at rate tokens per second up to capacity."""
         self.rate = rate
         self.capacity = capacity if capacity is not None else rate
         self._tokens = self.capacity
@@ -15,6 +16,7 @@ class TokenBucket:
         self._lock = asyncio.Lock()
 
     async def acquire(self, tokens: float = 1.0) -> None:
+        """Waits until tokens are available, then consumes them."""
         async with self._lock:
             while True:
                 now = time.monotonic()

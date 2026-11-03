@@ -13,6 +13,7 @@ ZERO = Decimal(0)
 
 class SequenceGap(Exception):
     def __init__(self, expected: int, got: int) -> None:
+        """Records the expected and received sequence numbers."""
         super().__init__(f"sequence gap: expected {expected}, got {got}")
         self.expected = expected
         self.got = got
@@ -28,6 +29,7 @@ class Fill:
 
     @property
     def avg_price(self) -> Decimal | None:
+        """Returns the volume-weighted average price, or None when nothing filled."""
         return self.cost / self.size if self.size else None
 
 
@@ -62,6 +64,9 @@ class OrderBook:
         seq: int | None = None,
         exchange_ts: datetime | None = None,
     ) -> None:
+        """Replaces all levels with a full snapshot and marks the book synced.
+        Levels with zero size are dropped.
+        """
         self.yes_bids = {p: s for p, s in yes_bids if s > 0}
         self.yes_asks = {p: s for p, s in yes_asks if s > 0}
         self.seq = seq
@@ -115,18 +120,21 @@ class OrderBook:
         self._touch(exchange_ts)
 
     def best_bid(self) -> tuple[Decimal, Decimal] | None:
+        """Returns the highest YES bid as (price, size), or None when there are no bids."""
         if not self.yes_bids:
             return None
         p = max(self.yes_bids)
         return p, self.yes_bids[p]
 
     def best_ask(self) -> tuple[Decimal, Decimal] | None:
+        """Returns the lowest YES ask as (price, size), or None when there are no asks."""
         if not self.yes_asks:
             return None
         p = min(self.yes_asks)
         return p, self.yes_asks[p]
 
     def is_crossed(self) -> bool:
+        """Returns True when the best bid is at or above the best ask."""
         bid, ask = self.best_bid(), self.best_ask()
         return bid is not None and ask is not None and bid[0] >= ask[0]
 
@@ -149,6 +157,7 @@ class OrderBook:
         return Fill(size=size - remaining, cost=cost, worst_price=worst)
 
     def snapshot(self, depth: int | None = None) -> BookSnapshot:
+        """Returns an immutable BookSnapshot, optionally truncated to depth levels per side."""
         bids = sorted(self.yes_bids.items(), reverse=True)[:depth]
         asks = sorted(self.yes_asks.items())[:depth]
         return BookSnapshot(
@@ -162,6 +171,7 @@ class OrderBook:
         )
 
     def _levels(self, book_side: str) -> dict[Decimal, Decimal]:
+        """Returns the bid or ask level map for book_side."""
         if book_side == "bid":
             return self.yes_bids
         if book_side == "ask":
@@ -169,6 +179,7 @@ class OrderBook:
         raise ValueError(f"book_side must be 'bid' or 'ask', got {book_side!r}")
 
     def _touch(self, exchange_ts: datetime | None) -> None:
+        """Updates the exchange timestamp when given and sets updated_ts to now."""
         if exchange_ts is not None:
             self.exchange_ts = exchange_ts
         self.updated_ts = datetime.now(UTC)

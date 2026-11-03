@@ -24,12 +24,14 @@ class Settings(BaseSettings):
 
     @property
     def kalshi_rest_url(self) -> str:
+        """Returns the Kalshi REST base URL for the configured environment."""
         if self.kalshi_env == "demo":
             return "https://external-api.demo.kalshi.co/trade-api/v2"
         return "https://external-api.kalshi.com/trade-api/v2"
 
     @property
     def kalshi_ws_url(self) -> str:
+        """Returns the Kalshi WebSocket URL for the configured environment."""
         if self.kalshi_env == "demo":
             return "wss://external-api-ws.demo.kalshi.co/trade-api/ws/v2"
         return "wss://external-api-ws.kalshi.com/trade-api/ws/v2"
@@ -37,4 +39,5 @@ class Settings(BaseSettings):
 
 @lru_cache
 def get_settings() -> Settings:
+    """Returns the process-wide settings, loaded once from the environment and .env."""
     return Settings()

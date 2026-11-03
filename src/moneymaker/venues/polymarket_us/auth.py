@@ -10,6 +10,7 @@ class PolymarketUSSigner:
     """Signs requests with Ed25519 over f"{timestamp_ms}{METHOD}{path}" (query string excluded)."""
 
     def __init__(self, key_id: str, secret_key_b64: str) -> None:
+        """Decodes the base64 secret and builds an Ed25519 key from its first 32 bytes."""
         raw = base64.b64decode(secret_key_b64)
         if len(raw) == 64:
             raw = raw[:32]
@@ -19,6 +20,7 @@ class PolymarketUSSigner:
         self._key = Ed25519PrivateKey.from_private_bytes(raw)
 
     def headers(self, method: str, path: str, timestamp_ms: int | None = None) -> dict[str, str]:
+        """Returns the X-PM-* auth headers for a request to path."""
         ts = str(timestamp_ms if timestamp_ms is not None else int(time.time() * 1000))
         signature = self._key.sign(f"{ts}{method.upper()}{path}".encode())
         return {
