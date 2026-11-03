@@ -38,12 +38,14 @@ _STATUS = {
 
 
 def _dec(v: Any) -> Decimal:
+    """Converts a number, string, or {value: ...} amount to Decimal."""
     if isinstance(v, dict):
         v = v.get("value")
     return Decimal(str(v))
 
 
 def _ts(v: str | None) -> datetime | None:
+    """Parses an ISO-8601 timestamp, returning None for empty values."""
     if not v:
         return None
     # Trims nanosecond precision to microseconds for datetime.fromisoformat.
@@ -54,6 +56,7 @@ def _ts(v: str | None) -> datetime | None:
 
 
 def parse_market(m: dict[str, Any]) -> Market:
+    """Converts a Polymarket US market payload to a normalized Market."""
     rules = "\n\n".join(x for x in (m.get("description"), m.get("rulesDisclaimer")) if x)
     question, title = m.get("question") or "", m.get("title") or ""
     full_title = f"{question}: {title}" if question and title and question != title else (
@@ -91,6 +94,7 @@ class PolymarketUSClient:
     venue = Venue.POLYMARKET_US
 
     def __init__(self, settings: Settings | None = None) -> None:
+        """Creates the gateway HTTP client, rate limiter, and a signer when keys are set."""
         self.settings = settings or get_settings()
         self._http = httpx.AsyncClient(base_url=GATEWAY_URL, timeout=self.settings.http_timeout_s)
         self._limiter = TokenBucket(rate=20, capacity=20)
@@ -101,6 +105,9 @@ class PolymarketUSClient:
             self.signer = PolymarketUSSigner(s.polymarket_us_key_id, secret)
 
     async def _get(self, path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Sends a rate-limited GET to the public gateway and returns the JSON body.
+        Retries 429 and 5xx responses with backoff, up to 5 times.
+        """
         for attempt in itertools.count():
             await self._limiter.acquire()
             resp = await self._http.get(path, params=params)
@@ -114,6 +121,7 @@ class PolymarketUSClient:
         raise AssertionError("unreachable")
 
     async def list_markets(self, *, limit: int | None = None) -> list[Market]:
+        """Returns active, unclosed markets, paging by offset until a short page or limit."""
         out: list[Market] = []
         offset = 0
         while True:
@@ -129,12 +137,14 @@ class PolymarketUSClient:
         return out[:limit] if limit is not None else out
 
     async def get_orderbook(self, venue_market_id: str) -> OrderBook:
+        """Returns a REST snapshot of a market's book."""
         data = await self._get(f"/v1/markets/{venue_market_id}/book")
         book = OrderBook(self.venue, venue_market_id)
         apply_market_data(book, data.get("marketData") or {})
         return book
 
     def stream_orderbooks(self, venue_market_ids: Sequence[str]) -> AsyncIterator[OrderBook]:
+        """Returns the WebSocket book stream when keys are configured, otherwise REST polling."""
         if self.signer is None:
             log.warning("polymarket_us.no_keys_polling_rest")
             return self.poll_orderbooks(venue_market_ids)
@@ -155,6 +165,9 @@ class PolymarketUSClient:
             await asyncio.sleep(max(0.0, interval_s - elapsed))
 
     async def _stream_ws(self, venue_market_ids: Sequence[str]) -> AsyncIterator[OrderBook]:
+        """Subscribes to market data and yields each book on every full snapshot.
+        Reconnects with backoff on disconnect or heartbeat timeout.
+        """
         assert self.signer is not None
         books = {slug: OrderBook(self.venue, slug) for slug in venue_market_ids}
         slugs = list(venue_market_ids)
@@ -198,4 +211,5 @@ class PolymarketUSClient:
                 await asyncio.sleep(delay)
 
     async def aclose(self) -> None:
+        """Closes the underlying HTTP client."""
         await self._http.aclose()

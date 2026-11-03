@@ -30,6 +30,7 @@ MARKET = {
 
 
 def test_parse_market():
+    """When given a Kalshi payload, it should normalize ids, title, status, tick, and rules."""
     m = parse_market(MARKET)
     assert m.venue is Venue.KALSHI
     assert m.event_id == "KXFED-26DEC"
@@ -41,6 +42,7 @@ def test_parse_market():
 
 
 def test_load_bids_inverts_no_side():
+    """When loading bid-only ladders, it should turn NO bids into YES asks at 1 - price."""
     book = OrderBook(Venue.KALSHI, "T")
     load_bids(
         book,
@@ -54,6 +56,7 @@ def test_load_bids_inverts_no_side():
 
 
 def test_ws_delta_routes_sides():
+    """When a delta arrives, it should apply YES deltas to bids and NO deltas to inverted asks."""
     book = OrderBook(Venue.KALSHI, "T")
     load_bids(book, yes=[["0.4200", "13.00"]], no=[["0.5600", "17.00"]])
     apply_ws_delta(book, {"price_dollars": "0.4200", "delta_fp": "-13.00", "side": "yes"})
@@ -65,6 +68,7 @@ def test_ws_delta_routes_sides():
 
 @pytest.mark.parametrize("kind", ["rsa", "ed25519"])
 def test_signer_signs_path_without_query(kind):
+    """When signing with RSA or Ed25519, it should sign the path without the query string."""
     key = rsa.generate_private_key(65537, 2048) if kind == "rsa" else Ed25519PrivateKey.generate()
     h = KalshiSigner("kid", key).headers("get", "/trade-api/v2/markets?limit=5", 1703123456789)
     sig = base64.b64decode(h["KALSHI-ACCESS-SIGNATURE"])
@@ -82,6 +86,7 @@ def test_signer_signs_path_without_query(kind):
 
 @respx.mock
 async def test_list_markets_follows_cursor_and_filters_non_binary():
+    """When the API pages with a cursor, it should fetch every page and drop non-binary markets."""
     settings = Settings(_env_file=None)
     base = settings.kalshi_rest_url
     route = respx.get(f"{base}/markets")

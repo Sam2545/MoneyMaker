@@ -43,6 +43,7 @@ BOOK = {
 
 
 def test_parse_market():
+    """When given a Polymarket US payload, it should normalize slug, title, status, and fee."""
     m = parse_market(MARKET)
     assert m.venue_market_id == MARKET["slug"]
     assert m.title == "Major League Soccer Champion: Vancouver Whitecaps FC"
@@ -53,6 +54,7 @@ def test_parse_market():
 
 
 def test_apply_market_data_yes_perspective():
+    """When given a book payload, it should map it to YES levels and price NO at 1 - bid."""
     book = OrderBook(parse_market(MARKET).venue, MARKET["slug"])
     apply_market_data(book, BOOK["marketData"])
     assert book.best_bid() == (D("0.1810"), D("1.0000"))
@@ -62,6 +64,7 @@ def test_apply_market_data_yes_perspective():
 
 
 def test_signer_produces_verifiable_signature():
+    """When signing a request, it should emit X-PM headers with a valid Ed25519 signature."""
     key = Ed25519PrivateKey.generate()
     seed = key.private_bytes(Encoding.Raw, PrivateFormat.Raw, NoEncryption())
     signer = PolymarketUSSigner("kid", base64.b64encode(seed).decode())
@@ -75,6 +78,7 @@ def test_signer_produces_verifiable_signature():
 
 @respx.mock
 async def test_list_markets_paginates_and_get_orderbook():
+    """When a page is full, it should request the next offset, and it should parse the REST book."""
     page1 = [{**MARKET, "slug": f"m{i}"} for i in range(100)]
     page2 = [{**MARKET, "slug": "last"}]
     respx.get(f"{GATEWAY_URL}/v1/markets", params={"offset": "0"}).mock(

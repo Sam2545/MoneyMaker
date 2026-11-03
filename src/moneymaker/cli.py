@@ -15,10 +15,12 @@ from moneymaker.venues.polymarket_us.client import PolymarketUSClient
 
 
 def make_client(venue: Venue) -> VenueClient:
+    """Returns the market data client for the given venue."""
     return KalshiClient() if venue is Venue.KALSHI else PolymarketUSClient()
 
 
 def fmt_top(book: OrderBook) -> str:
+    """Formats a book's best YES bid, best YES ask, and implied NO ask as one line."""
     bid, ask = book.best_bid(), book.best_ask()
     no_ask = book.walk(Side.NO, book.yes_bids[bid[0]]).avg_price if bid else None
     b = f"{bid[0]:.4f} x {bid[1]:>8}" if bid else "    -    x        -"
@@ -28,6 +30,7 @@ def fmt_top(book: OrderBook) -> str:
 
 
 async def cmd_markets(venue: Venue, limit: int) -> None:
+    """Prints open markets for a venue with their close date and title."""
     client = make_client(venue)
     try:
         for m in await client.list_markets(limit=limit):
@@ -38,6 +41,7 @@ async def cmd_markets(venue: Venue, limit: int) -> None:
 
 
 async def cmd_book(venue: Venue, market_id: str, depth: int) -> None:
+    """Prints a REST order book snapshot as side-by-side YES bid and ask ladders."""
     client = make_client(venue)
     try:
         snap = (await client.get_orderbook(market_id)).snapshot(depth)
@@ -53,6 +57,7 @@ async def cmd_book(venue: Venue, market_id: str, depth: int) -> None:
 
 
 async def cmd_stream(venue: Venue, market_ids: Sequence[str]) -> None:
+    """Prints top-of-book for each market every time its live book updates."""
     client = make_client(venue)
     try:
         async for book in client.stream_orderbooks(market_ids):
@@ -62,6 +67,7 @@ async def cmd_stream(venue: Venue, market_ids: Sequence[str]) -> None:
 
 
 def main(argv: Sequence[str] | None = None) -> None:
+    """Parses CLI arguments, configures logging, and runs the selected command."""
     parser = argparse.ArgumentParser(prog="moneymaker")
     parser.add_argument("-v", "--verbose", action="store_true")
     sub = parser.add_subparsers(dest="cmd", required=True)
