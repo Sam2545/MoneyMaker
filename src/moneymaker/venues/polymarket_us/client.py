@@ -55,8 +55,25 @@ def _ts(v: str | None) -> datetime | None:
     return datetime.fromisoformat(v.replace("Z", "+00:00"))
 
 
+GENERIC_SIDES = {"yes", "no", "up", "down", "over", "under"}
+
+
+def side_labels(m: dict[str, Any]) -> tuple[str | None, str | None]:
+    """Returns the named (YES, NO) outcomes from marketSides, or (None, None) for Yes/No sides."""
+    sides = m.get("marketSides") or []
+    long = next((s.get("description") for s in sides if s.get("long")), None)
+    short = next((s.get("description") for s in sides if s.get("long") is False), None)
+    if not long or long.strip().lower() in GENERIC_SIDES:
+        return None, None
+    return long, short
+
+
 def parse_market(m: dict[str, Any]) -> Market:
-    """Converts a Polymarket US market payload to a normalized Market."""
+    """Converts a Polymarket US market payload to a normalized Market.
+
+    The YES label is the named long side (e.g. a team or player) when marketSides names one,
+    otherwise the market's title field (e.g. a price range).
+    """
     rules = "\n\n".join(x for x in (m.get("description"), m.get("rulesDisclaimer")) if x)
     question, title = m.get("question") or "", m.get("title") or ""
     full_title = f"{question}: {title}" if question and title and question != title else (
@@ -64,12 +81,14 @@ def parse_market(m: dict[str, Any]) -> Market:
     )
     tick = m.get("orderPriceMinTickSize")
     fee = m.get("feeCoefficient")
+    named_yes, named_no = side_labels(m)
     return Market(
         venue=Venue.POLYMARKET_US,
         venue_market_id=m["slug"],
         event_id=m.get("eventSlug") or m.get("seriesSlug"),
         title=full_title,
-        yes_label=title or None,
+        yes_label=named_yes or title or None,
+        no_label=named_no,
         rules=rules,
         close_time=_ts(m.get("endDate")),
         expiration_time=_ts(m.get("endDate")),

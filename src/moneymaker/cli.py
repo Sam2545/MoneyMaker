@@ -76,7 +76,9 @@ def print_match_summary(run) -> None:
     else:
         print()
     print(
-        f"embeddings ({run.embedding_model}) computed: {run.embedded}"
+        f"embeddings ({run.embedding_model}) computed: {run.embedded} · "
+        f"Jev calls: {run.jev_calls} · "
+        f"cached: {run.jev_cached}"
     )
     print("statuses: " + ", ".join(f"{k} {v}" for k, v in run.status_counts().most_common()))
     priced = [r for r in run.results if r.edge is not None and r.edge.top_marginal is not None]
@@ -116,8 +118,10 @@ def main(argv: Sequence[str] | None = None) -> None:
 
     from moneymaker.matching.pipeline import SCOPES
 
-    p = sub.add_parser("match", help="find and price cross-venue market pairs")
+    p = sub.add_parser("match", help="find, classify and price cross-venue market pairs")
     p.add_argument("--scope", choices=sorted(SCOPES), required=True)
+    p.add_argument("--no-jev", action="store_true", help="skip Jev classification")
+    p.add_argument("--jev-limit", type=int, help="maximum new Jev calls this run")
     p.add_argument("--window-days", type=float, default=30.0)
     p.add_argument("--top-k", type=int, default=5)
 
@@ -145,7 +149,8 @@ def main(argv: Sequence[str] | None = None) -> None:
             from moneymaker.matching.pipeline import run_match
 
             run = asyncio.run(run_match(
-                args.scope, window_days=args.window_days, top_k=args.top_k,
+                args.scope, use_jev=not args.no_jev, jev_limit=args.jev_limit,
+                window_days=args.window_days, top_k=args.top_k,
             ))
             print_match_summary(run)
         else:

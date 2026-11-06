@@ -124,70 +124,99 @@ uv run moneymaker book    {kalshi|polymarket_us} <market_id> [--depth N]
 uv run moneymaker stream  {kalshi|polymarket_us} <market_id> [<market_id> ...]
 ```
 
-## 4. Phase 2 — matching with Jev
+## 4. Phase 2 — matching (implemented: `moneymaker match` / `moneymaker review`)
 
 Matching is the main source of loss. A false positive turns a riskless arb into two correlated
 losing bets, so the pipeline is tuned for **precision**: missing a match only costs opportunity.
+**Nothing is tradable until a human approves it.**
 
-### 4.1 Candidate retrieval (cheap, recall-oriented)
+```
+fetch (scoped) → candidates (embeddings + shape checks) → Jev (cached) → routing → pricing → report
+                                                                              ↓
+                                                         moneymaker review → your decisions
+```
 
-1. **Hard filters:** both markets are open, close dates fall within ±3 days (configurable), and the
-   categories are compatible (sports/politics/econ/crypto, mapped per venue).
-2. **Embeddings:** each `Market.title + yes_label + first 512 chars of rules` is embedded with a
-   local sentence-embedding model (e.g. `bge-small-en-v1.5`; Jev does not do embeddings). The
-   embeddings go in pgvector, and each market keeps its top-k=10 cross-venue neighbours above a
-   cosine floor.
-3. **Entity and number guardrails:** a deterministic check that extracted numbers (strikes such as
-   "3.75%" or "45+", dates, scores) and named entities (teams, people) agree. This catches
-   look-alike pairs such as "45+ points" vs "40+ points" that embeddings score as near-identical.
+### 4.1 Fetch and scope (`matching/pipeline.py`)
 
-### 4.2 Equivalence classification (Jev, `POST https://api.typesafe.ai/v1/systemone`)
+`--scope` maps to PM US `categories[]` and Kalshi series categories, e.g. `crypto` →
+(`crypto`, `Crypto`). Kalshi markets are fetched per series, which also yields each series'
+`fee_multiplier` for the fee model. Only `OPEN` markets are kept. Every market's snapshot is saved
+to the store so the review screen works offline.
 
-Each candidate pair is one request (Bearer `TYPESAFE_API_KEY`). The model is pinned to
-`jev-1.14.0`, not `jev-latest`, so calibrated thresholds don't drift when the alias moves.
-`state` holds both markets' structured fields: title, yes_label, full rules, close and
-expiration times, and the resolution source. All questions go in the same request because they
-are evaluated in parallel at almost no extra latency:
+### 4.2 Candidate search (`matching/candidates.py`, `embed.py`, `extract.py`)
+
+1. **Settle-date window:** Kalshi markets whose expiration (or close) is within ±30 days of the
+   PM market's. The window is wide because PM `endDate` is sometimes a placeholder (e.g. the 2026
+   BTC year-end ranges carry 2027-01-15).
+2. **Semantic search:** `title + yes_label + first 300 chars of rules` is embedded. For each PM
+   market, up to 300 Kalshi neighbours are scanned in cosine order and the first **5 that pass the
+   shape checks** below are kept, so the right rung of a strike ladder isn't lost to its siblings.
+   - With `OPENROUTER_API_KEY` set: `nvidia/nemotron-3.5-embed-8b:free` via OpenRouter
+     (`EMBEDDING_MODEL` to override), batched 128 per request and paced for the free tier.
+   - Without it: local `BAAI/bge-small-en-v1.5` via fastembed.
+   - Vectors are cached in SQLite per (text hash, model), so each market is embedded once per model.
+3. **Shape checks (deterministic):** the strike structure of both titles is parsed:
+   - range vs range must match exactly; range vs threshold is rejected;
+   - same-direction thresholds at different strikes become **implication candidates** (the lower
+     up-strike / higher down-strike is the broader market);
+   - plain titles with disjoint strike numbers are rejected;
+   - an "X vs Y" matchup must share a participant with the other market.
+
+### 4.3 Classification (`matching/jev.py`)
+
+One `POST https://api.typesafe.ai/v1/systemone` per pair (Bearer `TYPESAFE_API_KEY`), model pinned
+to `jev-1.14.0` (`TYPESAFE_MODEL`). `state` holds both markets (Kalshi = `market_a`): title, YES
+outcome, rules (≤ 6k chars), close and expiration times. Questions (`PROMPT_VERSION = 3`). Listed dates are labelled as possible placeholders, and the
+rules text is authoritative for timing:
 
 | id | type | question |
 |---|---|---|
-| `same_event` | noul | Do A and B refer to the same real-world event and measurement? |
-| `polarity` | choice | `same` (A-YES ≡ B-YES) / `inverted` (A-YES ≡ B-NO) / `neither` |
-| `same_source` | noul | Do both resolve from the same (or an equivalent) official source? |
+| `same_event` / `same_event_swapped` | noul | same subject, outcome/range and settlement moment? Source and method differences ignored (both orders) |
+| `polarity` / `polarity_swapped` | choice | which outcome of B is A's YES: `same` / `inverted` / `neither` (both orders; edge cases left to `divergence`) |
+| `same_source` | noul | same or equivalent resolution source? |
 | `deadline` | choice | `identical` / `A_window_longer` / `B_window_longer` / `incompatible` |
-| `divergence` | noul | Is there any plausible scenario (tie, postponement, overtime, void, revision, "announced" vs "occurs", time zone) where A and B resolve differently? |
-| `divergence_kind` | choice | Which of those scenarios applies (fixed list + `none`) |
+| `divergence` | noul | any plausible scenario where they resolve inconsistently? |
+| `divergence_kind` | choice | `cutoff_time`, `resolution_source`, `data_revision`, `postponement`, `overtime`, `tie_handling`, `threshold_boundary`, `measurement_definition`, `announced_vs_occurs`, `early_resolution`, `scope`, `void_or_refund`, `other`, `none` |
 
-Example request shape:
+Answers are cached by (pair, inputs hash, model, prompt version). The inputs hash covers
+everything Jev sees, so an edited market is reclassified automatically. Cost is about $0.0001/pair.
 
-```json
-{"model": "jev-1.14.0",
- "state": {"market_a": {"venue": "kalshi", "title": "...", "rules": "...", "close_time": "..."},
-           "market_b": {"venue": "polymarket_us", "title": "...", "rules": "...", "close_time": "..."}},
- "questions": {"same_event": {"type": "noul", "instructions": "Do `market_a` and `market_b` ..."},
-               "polarity": {"type": "choice", "instructions": "...",
-                            "criteria": {"same": "...", "inverted": "...", "neither": "..."}}}}
-```
+### 4.4 Routing (`matching/routing.py`, thresholds in `matching/thresholds.toml`)
 
-The decision is made **in code** from the probabilities and the `confidence` values:
+| Status | When |
+|---|---|
+| `rejected` | `same_event < 0.25`, or `P(polarity = neither) ≥ 0.80` (shape-check rejects never reach Jev) |
+| `uncertain` | swap test disagrees; `measurement_definition` / `scope` ≥ 0.50; any approve gate missed; all implication candidates |
+| `pending_review` | every gate passes: `same_event ≥ 0.97`, polarity ≥ 0.98 and not `neither`, `divergence ≤ 0.03`, `same_source ≥ 0.90`, `deadline = identical` ≥ 0.95, `S = same_event × p(polarity) × (1 − divergence) ≥ 0.95` |
+| `approved_equivalent` / `approved_implication` | **only** set by `moneymaker review` |
+| `suspended` | an approved pair whose inputs hash changed; back in the review queue |
+| `unclassified` | no Jev key, Jev error, or `--jev-limit` reached |
 
-- **Approve:** `same_event ≥ 0.97`, `polarity.confidence ≥ 0.9` and not `neither`,
-  `divergence ≤ 0.05`, `deadline ∈ {identical}`, and the guardrails from §4.1 pass.
-- **Review queue:** everything between approve and reject, ranked by expected opportunity.
-  A human sees a side-by-side rules diff and approves or rejects.
-- **Reject:** `same_event < 0.5` or `polarity = neither`.
-- **Phase 4–5 gate:** while live trading is new, *every* pair needs a human approval. Jev only
-  orders the queue. Auto-approval turns on after measuring precision on ≥ 200 labelled pairs
-  (the thresholds above are starting points, to be tuned against that set).
+Divergence kinds ≥ 0.15 are listed as flags on the pair. Expected next steps: calibrate the
+thresholds against ≥ 200 labelled pairs (target ≥ 99.5% precision in the approve band) before any
+auto-approval, and add code-level checks for `cutoff_time` / `threshold_boundary`.
 
-Cost: about 1.5–3k input tokens per pair × $0.042/Mtok ≈ $0.0001 per pair, so 100k pairs cost
-about $10. Re-classification runs whenever a market's rules hash changes. A rules change on an
-approved pair **suspends** it until it is re-approved.
+### 4.5 Pricing and report
 
-### 4.3 Match record
+Every non-rejected pair is priced from REST books (`edge.py`, `fees.py`): both directions for
+equivalents, only the safe direction for implications, and, for `unclassified` pairs, only when
+both YES labels match (labelled unverified). Sizing walks both ladders, uses ≤ 50% of each level,
+and stops before a marginal contract earns < 0.2¢. Each priced pair is stored as an
+`observation`, and the run writes `data/match_runs/<run>-<scope>.jsonl`.
 
-`match(id, kalshi_market, pm_market, polarity, jev_model, jev_answers jsonb, rules_hash_a,
-rules_hash_b, status{pending,approved,rejected,suspended}, approved_by, approved_at)`.
+### 4.6 Review (`matching/review.py`)
+
+`moneymaker review [--status S] [--limit N]` walks the queue (default `pending_review`,
+`suspended`, `unclassified`), highest latest edge first. Each screen shows both markets' titles,
+YES outcomes, times and rules, Jev scores and flags, the routing reasons, and the latest edge.
+Keys: **e** equivalent (confirm polarity), **i** implication (confirm the broader side),
+**r** reject, **u** uncertain, **s** skip, **v** full rules, **q** quit. Decisions are saved
+immediately and survive reruns unless the market changes.
+
+### 4.7 Store (`data/matches.db`, SQLite, gitignored)
+
+`embeddings`, `markets` (snapshots), `classifications` (Jev answers), `matches` (status, relation,
+polarity, direction, scores, flags, reasons, decided_by, note), `observations` (edge per run).
 
 ## 5. Phase 3 — arbitrage engine (deterministic)
 
@@ -305,7 +334,7 @@ are reconciled, and the Phase 4 exit criterion is met.
 | Phase | Deliverable | Gate to next |
 |---|---|---|
 | 1 ✅ | Adapters, normalized books, CLI | Live WS verified on both venues with keys |
-| 2 | Retrieval + Jev classification + review queue | ≥ 200 labelled pairs; measured precision |
+| 2 🚧 | Retrieval + Jev classification + review queue (built; needs Jev key + labels) | ≥ 200 labelled pairs; measured precision |
 | 3 | Fee model + opportunity engine + persistence | Fee model reconciled to actual fills |
 | 4 | Paper trader with latency injection | 2 weeks net-positive, ≥ 90% leg completion |
 | 5 | Live executor + RiskManager, tiny limits | 30 days live within risk limits |

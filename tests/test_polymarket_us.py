@@ -53,6 +53,23 @@ def test_parse_market():
     assert m.close_time.year == 2027
 
 
+def test_parse_market_uses_named_sides():
+    """When marketSides name a player, it should use them as the YES and NO labels."""
+    sports = {
+        **MARKET,
+        "question": "Who will win?",
+        "title": "Taylor Fritz vs Carlos Alcaraz",
+        "marketSides": [{"description": "Taylor Fritz", "long": True},
+                        {"description": "Carlos Alcaraz", "long": False}],
+    }
+    m = parse_market(sports)
+    assert (m.yes_label, m.no_label) == ("Taylor Fritz", "Carlos Alcaraz")
+    generic = {**MARKET, "marketSides": [{"description": "Yes", "long": True},
+                                         {"description": "No", "long": False}]}
+    assert (parse_market(generic).yes_label, parse_market(generic).no_label) == (
+        "Vancouver Whitecaps FC", None)
+
+
 def test_apply_market_data_yes_perspective():
     """When given a book payload, it should map it to YES levels and price NO at 1 - bid."""
     book = OrderBook(parse_market(MARKET).venue, MARKET["slug"])

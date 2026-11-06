@@ -34,6 +34,7 @@ class Market(BaseModel):
     event_id: str | None = None
     title: str
     yes_label: str | None = None
+    no_label: str | None = None
     rules: str = ""
     close_time: datetime | None = None
     expiration_time: datetime | None = None

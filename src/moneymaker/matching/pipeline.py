@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import json
 import re
 from collections import Counter
@@ -11,6 +10,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
+import httpx
 import structlog
 
 from moneymaker.config import Settings, get_settings
@@ -19,7 +19,9 @@ from moneymaker.fees import FeeModel
 from moneymaker.matching.candidates import Candidate, CandidateStats, generate
 from moneymaker.matching.embed import MODEL_NAME as LOCAL_EMBED_MODEL
 from moneymaker.matching.embed import Embedder
+from moneymaker.matching.jev import PROMPT_VERSION, Answers, JevClient, inputs_hash
 from moneymaker.matching.openrouter import OpenRouterEncoder
+from moneymaker.matching.routing import Thresholds, route
 from moneymaker.matching.store import MatchStore, Routed
 from moneymaker.models import Market, MarketStatus, Side
 from moneymaker.orderbook import OrderBook
@@ -58,6 +60,8 @@ class MatchRun:
     scope: str
     stats: CandidateStats
     results: list[PairResult] = field(default_factory=list)
+    jev_calls: int = 0
+    jev_cached: int = 0
     embedded: int = 0
     embedding_model: str = ""
     report_path: Path | None = None
@@ -65,14 +69,6 @@ class MatchRun:
     def status_counts(self) -> Counter:
         """Returns how many pairs ended in each status."""
         return Counter(r.status for r in self.results)
-
-
-def pair_hash(kalshi: Market, pm: Market) -> str:
-    """Returns a hash of both markets' normalized fields, so edits are detected."""
-    blob = json.dumps(
-        [m.model_dump(mode="json", exclude={"raw"}) for m in (kalshi, pm)], sort_keys=True
-    )
-    return hashlib.sha256(blob.encode()).hexdigest()
 
 
 def _norm(label: str | None) -> str:
@@ -144,16 +140,23 @@ async def run_match(
     scope: str,
     *,
     settings: Settings | None = None,
+    use_jev: bool = True,
+    jev_limit: int | None = None,
     window_days: float = 30.0,
     top_k: int = 5,
     min_edge_per_contract: Decimal = Decimal("0.002"),
     report_dir: Path = Path("data/match_runs"),
+    thresholds: Thresholds | None = None,
 ) -> MatchRun:
-    """Runs fetch, candidate search, pricing and reporting; every pair is unclassified."""
+    """Runs fetch, candidate search, Jev classification, routing, pricing and reporting."""
     settings = settings or get_settings()
+    thresholds = thresholds or Thresholds.load()
     run_id = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     store = MatchStore(settings.match_db_path)
     kalshi, pm = KalshiClient(settings), PolymarketUSClient(settings)
+    jev: JevClient | None = None
+    if use_jev and settings.typesafe_api_key:
+        jev = JevClient(settings.typesafe_api_key.get_secret_value(), settings.typesafe_model)
     try:
         log.info("match.fetching", scope=scope)
         k_markets, p_markets, fee_model = await fetch_markets(scope, kalshi, pm)
@@ -182,13 +185,41 @@ async def run_match(
         log.info("match.candidates", kept=stats.kept, proposed=stats.proposed)
 
         async def classify(c: Candidate) -> PairResult:
-            """Records one candidate as unclassified, keeping any stored user decision."""
+            """Classifies and routes one candidate, using cached answers when available."""
+            h = inputs_hash(c.kalshi, c.pm)
             kid, pid = c.kalshi.venue_market_id, c.pm.venue_market_id
-            routed = Routed("unclassified", reasons=["not classified"])
-            status = store.upsert_routed(kid, pid, pair_hash(c.kalshi, c.pm), c.similarity, routed)
+            if jev is None:
+                routed = Routed("unclassified", reasons=["not classified by Jev"])
+            else:
+                cached = store.get_classification(kid, pid, h, jev.model, PROMPT_VERSION)
+                if cached is not None:
+                    answers = Answers(model=cached["model"], raw=cached["answers"])
+                    run.jev_cached += 1
+                elif jev_limit is not None and run.jev_calls >= jev_limit:
+                    routed = Routed("unclassified", reasons=["Jev call limit reached"])
+                    status = store.upsert_routed(kid, pid, h, c.similarity, routed)
+                    return PairResult(c, status, routed)
+                else:
+                    run.jev_calls += 1
+                    try:
+                        answers = await jev.classify(c.kalshi, c.pm)
+                    except httpx.HTTPError as exc:
+                        log.warning("match.jev_error", kalshi=kid, pm=pid, error=repr(exc))
+                        routed = Routed("unclassified", reasons=[f"Jev error: {exc!r}"[:200]])
+                        status = store.upsert_routed(kid, pid, h, c.similarity, routed)
+                        return PairResult(c, status, routed)
+                    store.put_classification(
+                        kid, pid, h, jev.model, PROMPT_VERSION,
+                        {"model": answers.model, "answers": answers.raw},
+                    )
+                routed = route(answers, c.check, thresholds)
+            status = store.upsert_routed(kid, pid, h, c.similarity, routed)
             row = store.get_match(kid, pid)
             if row is not None and row["decided_by"] == "user":
-                routed = Routed(status, row["relation"], row["polarity"], row["direction"])
+                routed = Routed(
+                    status, row["relation"], row["polarity"], row["direction"],
+                    routed.scores, routed.flags, routed.reasons,
+                )
             return PairResult(c, status, routed)
 
         run.results = list(await asyncio.gather(*(classify(c) for c in candidates)))
@@ -234,6 +265,8 @@ async def run_match(
     finally:
         await kalshi.aclose()
         await pm.aclose()
+        if jev is not None:
+            await jev.aclose()
         store.close()
 
 

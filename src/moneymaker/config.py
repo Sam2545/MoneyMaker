@@ -18,6 +18,8 @@ class Settings(BaseSettings):
     polymarket_us_key_id: str | None = None
     polymarket_us_secret_key: SecretStr | None = None
 
+    typesafe_api_key: SecretStr | None = None
+    typesafe_model: str = "jev-1.14.0"
     match_db_path: Path = Path("data/matches.db")
 
     openrouter_api_key: SecretStr | None = None
