@@ -153,6 +153,20 @@ def test_openrouter_encoder_batches_and_orders():
     assert out[:, 0].tolist() == [0.0, 1.0, 0.0]
 
 
+def test_review_sample_takes_top_pairs_per_template():
+    """When sampling, it should keep the best-edge pairs of each template up to the limit."""
+    from moneymaker.matching.review import sample_rows, template
+
+    assert template("KXBTCY-27JAN0100-B47500", "cpc-btc-pricerange-yr-12-31-2026-47500") == (
+        "KXBTCY <-> cpc-btc-pricerange-yr")
+    assert template("KXBTCMAX150-25-26DEC31-1", "cpc-btc-150k-12-31-2026") == (
+        "KXBTCMAX150 <-> cpc-btc-150k")
+    rows = [{"kalshi_id": f"KXA-{i}", "pm_id": "pm-a-2026"} for i in range(3)] + [
+        {"kalshi_id": "KXB-1", "pm_id": "pm-b-2026"}]
+    picked = sample_rows(rows, 2)
+    assert [r["kalshi_id"] for r in picked] == ["KXA-0", "KXA-1", "KXB-1"]
+
+
 def test_review_records_decisions():
     """When the reviewer approves one pair and rejects another, it should store both decisions."""
     s = MatchStore(":memory:")

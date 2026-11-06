@@ -132,6 +132,7 @@ def main(argv: Sequence[str] | None = None) -> None:
         help="statuses to review (repeatable); default pending_review, suspended, unclassified",
     )
     p.add_argument("--limit", type=int)
+    p.add_argument("--sample", type=int, metavar="N", help="review the top N pairs per template")
 
     args = parser.parse_args(argv)
     structlog.configure(
@@ -161,7 +162,9 @@ def main(argv: Sequence[str] | None = None) -> None:
 
             store = MatchStore(get_settings().match_db_path)
             try:
-                counts = review(store, args.status or DEFAULT_STATUSES, limit=args.limit)
+                counts = review(
+                    store, args.status or DEFAULT_STATUSES, limit=args.limit, sample=args.sample
+                )
             finally:
                 store.close()
             print("\n" + ", ".join(f"{k} {v}" for k, v in counts.items() if v))

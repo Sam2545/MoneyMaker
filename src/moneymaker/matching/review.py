@@ -16,6 +16,32 @@ InputFn = Callable[[str], str]
 PrintFn = Callable[[str], None]
 
 
+def template(kalshi_id: str, pm_id: str) -> str:
+    """Returns the series template of a pair, e.g. KXBTCY <-> cpc-btc-pricerange-yr.
+
+    The Kalshi part is the series prefix; the PM part is the slug up to its first all-digit
+    segment.
+    """
+    pm_parts = []
+    for part in pm_id.split("-"):
+        if part.isdigit():
+            break
+        pm_parts.append(part)
+    return f"{kalshi_id.split('-', 1)[0]} <-> {'-'.join(pm_parts) or pm_id}"
+
+
+def sample_rows(rows: Sequence[sqlite3.Row], per_template: int) -> list[sqlite3.Row]:
+    """Keeps the first per_template rows of each template, preserving the queue order."""
+    seen: dict[str, int] = {}
+    out = []
+    for row in rows:
+        key = template(row["kalshi_id"], row["pm_id"])
+        if seen.get(key, 0) < per_template:
+            seen[key] = seen.get(key, 0) + 1
+            out.append(row)
+    return out
+
+
 def _fmt_time(m: Market) -> str:
     """Returns a market's close and expiration times as short UTC strings."""
     close = m.close_time.strftime("%Y-%m-%d %H:%M UTC") if m.close_time else "?"
@@ -50,6 +76,7 @@ def render(
     flags = json.loads(row["flags"] or "[]")
     reasons = json.loads(row["reasons"] or "[]")
     head = (
+        f"template {template(row['kalshi_id'], row['pm_id'])}\n"
         f"status {row['status']} · relation {row['relation'] or '-'} · "
         f"polarity {row['polarity'] or '?'} · similarity {row['similarity'] or 0:.2f}"
     )
@@ -100,11 +127,17 @@ def review(
     statuses: Sequence[str] = DEFAULT_STATUSES,
     *,
     limit: int | None = None,
+    sample: int | None = None,
     input_fn: InputFn = input,
     print_fn: PrintFn = print,
 ) -> dict[str, int]:
-    """Walks the review queue interactively and records decisions; returns counts by action."""
-    rows = store.review_queue(statuses, limit)
+    """Walks the review queue interactively and records decisions; returns counts by action.
+
+    With sample, only the top `sample` pairs of each series template are shown, best edge first.
+    """
+    rows = store.review_queue(statuses, None if sample else limit)
+    if sample:
+        rows = sample_rows(rows, sample)[:limit] if limit else sample_rows(rows, sample)
     counts = {"equivalent": 0, "implication": 0, "rejected": 0, "uncertain": 0, "skipped": 0}
     if not rows:
         print_fn(f"Nothing to review in: {', '.join(statuses)}")
