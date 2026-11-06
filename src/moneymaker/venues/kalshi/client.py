@@ -129,12 +129,23 @@ class KalshiClient:
             return resp.json()
         raise AssertionError("unreachable")
 
-    async def list_markets(self, *, limit: int | None = None) -> list[Market]:
-        """Returns open binary markets, following the cursor until exhausted or limit is reached."""
+    async def list_series(self) -> list[dict[str, Any]]:
+        """Returns every Kalshi series with its category and fee settings."""
+        return (await self._get("/series", {})).get("series") or []
+
+    async def list_markets(
+        self, *, limit: int | None = None, series_ticker: str | None = None
+    ) -> list[Market]:
+        """Returns open binary markets, optionally for one series, following the cursor.
+
+        Stops when the cursor is exhausted or limit is reached.
+        """
         out: list[Market] = []
         cursor: str | None = None
         while True:
             params: dict[str, Any] = {"status": "open", "limit": PAGE_SIZE, "mve_filter": "exclude"}
+            if series_ticker:
+                params["series_ticker"] = series_ticker
             if cursor:
                 params["cursor"] = cursor
             data = await self._get("/markets", params)

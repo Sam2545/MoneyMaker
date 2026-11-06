@@ -10,6 +10,8 @@ dependencies = [
     "pydantic-settings>=2.4",
     "cryptography>=43",
     "structlog>=24.4",
+    "fastembed>=0.9.1",
+    "numpy>=2.5.4",
 ]
 
 [project.scripts]

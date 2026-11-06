@@ -120,15 +120,22 @@ class PolymarketUSClient:
             return resp.json()
         raise AssertionError("unreachable")
 
-    async def list_markets(self, *, limit: int | None = None) -> list[Market]:
-        """Returns active, unclosed markets, paging by offset until a short page or limit."""
+    async def list_markets(
+        self, *, limit: int | None = None, categories: Sequence[str] | None = None
+    ) -> list[Market]:
+        """Returns active, unclosed markets, optionally only in categories, paging by offset.
+
+        Stops at a short page or when limit is reached.
+        """
         out: list[Market] = []
         offset = 0
         while True:
-            data = await self._get(
-                "/v1/markets",
-                {"active": "true", "closed": "false", "limit": PAGE_SIZE, "offset": offset},
-            )
+            params: dict[str, Any] = {
+                "active": "true", "closed": "false", "limit": PAGE_SIZE, "offset": offset,
+            }
+            if categories:
+                params["categories[]"] = list(categories)
+            data = await self._get("/v1/markets", params)
             page = data.get("markets") or []
             out.extend(parse_market(m) for m in page if m.get("slug"))
             if len(page) < PAGE_SIZE or (limit is not None and len(out) >= limit):

@@ -66,6 +66,35 @@ async def cmd_stream(venue: Venue, market_ids: Sequence[str]) -> None:
         await client.aclose()
 
 
+def print_match_summary(run) -> None:
+    """Prints counts, the best-priced pairs, and the report path for a match run."""
+    st = run.stats
+    print(f"\nscope {run.scope}: {st.kalshi_markets} Kalshi x {st.pm_markets} PM US markets")
+    print(f"candidates: {st.proposed} proposed → {st.kept} kept", end="")
+    if st.rejected:
+        print(" (dropped: " + ", ".join(f"{n} {why}" for why, n in st.rejected.most_common()) + ")")
+    else:
+        print()
+    print(
+        f"embeddings ({run.embedding_model}) computed: {run.embedded}"
+    )
+    print("statuses: " + ", ".join(f"{k} {v}" for k, v in run.status_counts().most_common()))
+    priced = [r for r in run.results if r.edge is not None and r.edge.top_marginal is not None]
+    priced.sort(key=lambda r: (r.edge.net, r.edge.top_marginal), reverse=True)
+    if priced:
+        print(f"\n{'status':<20}{'net':>9}{'¢/ct':>8}{'size':>8}{'%/yr':>7}  {'top¢':>6}  pair")
+        for r in priced[:15]:
+            e = r.edge
+            ann = f"{float(e.annualized) * 100:6.1f}" if e.annualized is not None else "     -"
+            print(
+                f"{r.status:<20}{float(e.net):>9.2f}{float(e.net_per_contract) * 100:>8.2f}"
+                f"{float(e.contracts):>8.0f}{ann:>7}  {float(e.top_marginal) * 100:>6.2f}  "
+                f"{r.candidate.kalshi.venue_market_id} ↔ {r.candidate.pm.venue_market_id}"
+            )
+    print(f"\nreport: {run.report_path}")
+    print("review with: uv run moneymaker review")
+
+
 def main(argv: Sequence[str] | None = None) -> None:
     """Parses CLI arguments, configures logging, and runs the selected command."""
     parser = argparse.ArgumentParser(prog="moneymaker")
@@ -85,6 +114,20 @@ def main(argv: Sequence[str] | None = None) -> None:
     p.add_argument("venue", type=Venue)
     p.add_argument("market_ids", nargs="+")
 
+    from moneymaker.matching.pipeline import SCOPES
+
+    p = sub.add_parser("match", help="find and price cross-venue market pairs")
+    p.add_argument("--scope", choices=sorted(SCOPES), required=True)
+    p.add_argument("--window-days", type=float, default=30.0)
+    p.add_argument("--top-k", type=int, default=5)
+
+    p = sub.add_parser("review", help="review matched pairs and record decisions")
+    p.add_argument(
+        "--status", action="append",
+        help="statuses to review (repeatable); default pending_review, suspended, unclassified",
+    )
+    p.add_argument("--limit", type=int)
+
     args = parser.parse_args(argv)
     structlog.configure(
         wrapper_class=structlog.make_filtering_bound_logger(
@@ -96,8 +139,26 @@ def main(argv: Sequence[str] | None = None) -> None:
             asyncio.run(cmd_markets(args.venue, args.limit))
         elif args.cmd == "book":
             asyncio.run(cmd_book(args.venue, args.market_id, args.depth))
-        else:
+        elif args.cmd == "stream":
             asyncio.run(cmd_stream(args.venue, args.market_ids))
+        elif args.cmd == "match":
+            from moneymaker.matching.pipeline import run_match
+
+            run = asyncio.run(run_match(
+                args.scope, window_days=args.window_days, top_k=args.top_k,
+            ))
+            print_match_summary(run)
+        else:
+            from moneymaker.config import get_settings
+            from moneymaker.matching.review import DEFAULT_STATUSES, review
+            from moneymaker.matching.store import MatchStore
+
+            store = MatchStore(get_settings().match_db_path)
+            try:
+                counts = review(store, args.status or DEFAULT_STATUSES, limit=args.limit)
+            finally:
+                store.close()
+            print("\n" + ", ".join(f"{k} {v}" for k, v in counts.items() if v))
     except KeyboardInterrupt:
         pass
     except RuntimeError as exc:

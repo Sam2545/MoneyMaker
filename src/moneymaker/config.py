@@ -18,6 +18,11 @@ class Settings(BaseSettings):
     polymarket_us_key_id: str | None = None
     polymarket_us_secret_key: SecretStr | None = None
 
+    match_db_path: Path = Path("data/matches.db")
+
+    openrouter_api_key: SecretStr | None = None
+    embedding_model: str = "nvidia/nemotron-3.5-embed-8b:free"
+
     http_timeout_s: float = 10.0
     ws_ping_interval_s: float = 10.0
     reconnect_max_backoff_s: float = 30.0
