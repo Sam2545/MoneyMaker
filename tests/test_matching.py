@@ -184,6 +184,8 @@ def test_review_records_decisions():
                    pm("B", slug="P2")])
     s.upsert_routed("K1", "P1", "h", 0.9, Routed("pending_review", "equivalent", "same"))
     s.upsert_routed("K2", "P2", "h", 0.8, Routed("pending_review", "equivalent", "same"))
+    only = review(s, match="K2", input_fn=lambda _: "q", print_fn=lambda _: None)
+    assert sum(only.values()) == 0
     replies = iter(["e", "", "", "r", "different events"])
     counts = review(s, input_fn=lambda _: next(replies), print_fn=lambda _: None)
     assert counts["equivalent"] == 1 and counts["rejected"] == 1

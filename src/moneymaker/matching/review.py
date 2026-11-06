@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 import textwrap
 from collections.abc import Callable, Sequence
@@ -128,6 +129,7 @@ def review(
     *,
     limit: int | None = None,
     sample: int | None = None,
+    match: str | None = None,
     input_fn: InputFn = input,
     print_fn: PrintFn = print,
 ) -> dict[str, int]:
@@ -135,7 +137,12 @@ def review(
 
     With sample, only the top `sample` pairs of each series template are shown, best edge first.
     """
-    rows = store.review_queue(statuses, None if sample else limit)
+    rows = store.review_queue(statuses, None if sample or match else limit)
+    if match:
+        pattern = re.compile(match, re.IGNORECASE)
+        rows = [r for r in rows if pattern.search(f"{r['kalshi_id']} {r['pm_id']}")]
+        if not sample and limit:
+            rows = rows[:limit]
     if sample:
         rows = sample_rows(rows, sample)[:limit] if limit else sample_rows(rows, sample)
     counts = {"equivalent": 0, "implication": 0, "rejected": 0, "uncertain": 0, "skipped": 0}
