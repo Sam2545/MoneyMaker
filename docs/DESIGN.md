@@ -151,9 +151,14 @@ to the store so the review screen works offline.
 2. **Semantic search:** `title + yes_label + first 300 chars of rules` is embedded. For each PM
    market, up to 300 Kalshi neighbours are scanned in cosine order and the first **5 that pass the
    shape checks** below are kept, so the right rung of a strike ladder isn't lost to its siblings.
-   - With `OPENROUTER_API_KEY` set: `nvidia/nemotron-3.5-embed-8b:free` via OpenRouter
-     (`EMBEDDING_MODEL` to override), batched 128 per request and paced for the free tier.
-   - Without it: local `BAAI/bge-small-en-v1.5` via fastembed.
+   - `EMBEDDING_MODEL` (default `gemini-embedding-2`) picks the model. `gemini-*` models use the
+     Gemini API (`GEMINI_API_KEY`), 100 texts per batch, 768 dimensions, with the
+     `task: sentence similarity` prefix (`gemini-embedding-001` uses `task_type`
+     `SEMANTIC_SIMILARITY`). Provider-prefixed models (e.g. `qwen/qwen3-embedding-8b`) use
+     OpenRouter (`OPENROUTER_API_KEY`). OpenRouter's free Nemotron endpoint was rejecting batches
+     on 2026-11-05.
+   - Without the key, or if the remote model fails mid-run, the whole run uses local
+     `BAAI/bge-small-en-v1.5` via fastembed.
    - Vectors are cached in SQLite per (text hash, model), so each market is embedded once per model.
 3. **Shape checks (deterministic):** the strike structure of both titles is parsed:
    - range vs range must match exactly; range vs threshold is rejected;

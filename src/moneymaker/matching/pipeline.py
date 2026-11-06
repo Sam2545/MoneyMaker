@@ -19,6 +19,7 @@ from moneymaker.fees import FeeModel
 from moneymaker.matching.candidates import Candidate, CandidateStats, generate
 from moneymaker.matching.embed import MODEL_NAME as LOCAL_EMBED_MODEL
 from moneymaker.matching.embed import Embedder
+from moneymaker.matching.gemini import GeminiEncoder
 from moneymaker.matching.jev import PROMPT_VERSION, Answers, JevClient, inputs_hash
 from moneymaker.matching.openrouter import OpenRouterEncoder
 from moneymaker.matching.routing import Thresholds, route
@@ -115,6 +116,19 @@ async def fetch_markets(
     return k, p, FeeModel(multipliers)
 
 
+def remote_encoder(settings: Settings) -> GeminiEncoder | OpenRouterEncoder | None:
+    """Returns the configured remote embedding encoder, or None when its API key is missing.
+
+    Models named gemini-* use the Gemini API; models with a provider prefix use OpenRouter.
+    """
+    model = settings.embedding_model
+    if model.startswith("gemini-") and settings.gemini_api_key:
+        return GeminiEncoder(settings.gemini_api_key.get_secret_value(), model)
+    if "/" in model and settings.openrouter_api_key:
+        return OpenRouterEncoder(settings.openrouter_api_key.get_secret_value(), model)
+    return None
+
+
 def legs_for(
     status: str, routed: Routed, c: Candidate, kb: OrderBook, pb: OrderBook
 ) -> tuple[str, Leg, Leg] | str | None:
@@ -147,6 +161,7 @@ async def run_match(
     min_edge_per_contract: Decimal = Decimal("0.002"),
     report_dir: Path = Path("data/match_runs"),
     thresholds: Thresholds | None = None,
+    include: str | None = None,
 ) -> MatchRun:
     """Runs fetch, candidate search, Jev classification, routing, pricing and reporting."""
     settings = settings or get_settings()
@@ -160,25 +175,35 @@ async def run_match(
     try:
         log.info("match.fetching", scope=scope)
         k_markets, p_markets, fee_model = await fetch_markets(scope, kalshi, pm)
+        if include:
+            pattern = re.compile(include, re.IGNORECASE)
+            keep = lambda m: bool(pattern.search(f"{m.venue_market_id} {m.title}"))  # noqa: E731
+            k_markets = [m for m in k_markets if keep(m)]
+            p_markets = [m for m in p_markets if keep(m)]
         store.put_markets(k_markets + p_markets)
         log.info("match.fetched", kalshi=len(k_markets), pm=len(p_markets))
 
-        encoder: OpenRouterEncoder | None = None
-        if settings.openrouter_api_key:
-            encoder = OpenRouterEncoder(
-                settings.openrouter_api_key.get_secret_value(), settings.embedding_model
-            )
+        encoder = remote_encoder(settings)
+        embedder = None
+        if encoder is not None:
             embedder = Embedder(store, settings.embedding_model, encode=encoder)
+            try:
+                candidates, stats = generate(
+                    k_markets, p_markets, embedder, window_days=window_days, top_k=top_k
+                )
+            except (httpx.HTTPError, ValueError, KeyError) as exc:
+                log.warning("match.embedding_failed_using_local_model",
+                            model=settings.embedding_model, error=repr(exc)[:200])
+                embedder = None
+            finally:
+                encoder.close()
         else:
-            log.warning("match.no_openrouter_key_using_local_model", model=LOCAL_EMBED_MODEL)
+            log.warning("match.no_embedding_key_using_local_model", model=LOCAL_EMBED_MODEL)
+        if embedder is None:
             embedder = Embedder(store, LOCAL_EMBED_MODEL)
-        try:
             candidates, stats = generate(
                 k_markets, p_markets, embedder, window_days=window_days, top_k=top_k
             )
-        finally:
-            if encoder is not None:
-                encoder.close()
         run = MatchRun(
             run_id, scope, stats, embedded=embedder.computed, embedding_model=embedder.model_name
         )
@@ -224,17 +249,21 @@ async def run_match(
 
         run.results = list(await asyncio.gather(*(classify(c) for c in candidates)))
 
-        books: dict[tuple[str, str], OrderBook] = {}
-        sem = asyncio.Semaphore(8)
+        books: dict[tuple[str, str], asyncio.Task[OrderBook]] = {}
+        sem = asyncio.Semaphore(4)
+
+        async def fetch_book(venue: str, market_id: str) -> OrderBook:
+            """Fetches one REST order book."""
+            async with sem:
+                client = kalshi if venue == "kalshi" else pm
+                return await client.get_orderbook(market_id)
 
         async def book(venue: str, market_id: str) -> OrderBook:
-            """Fetches and memoizes one REST order book."""
+            """Returns one REST order book, sharing a single fetch among concurrent callers."""
             key = (venue, market_id)
             if key not in books:
-                async with sem:
-                    client = kalshi if venue == "kalshi" else pm
-                    books[key] = await client.get_orderbook(market_id)
-            return books[key]
+                books[key] = asyncio.create_task(fetch_book(venue, market_id))
+            return await books[key]
 
         async def price(r: PairResult) -> None:
             """Prices one pair in its tradable direction(s) and records the observation."""

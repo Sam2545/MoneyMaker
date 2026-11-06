@@ -112,11 +112,11 @@ def apply_market_data(book: OrderBook, md: dict[str, Any]) -> None:
 class PolymarketUSClient:
     venue = Venue.POLYMARKET_US
 
-    def __init__(self, settings: Settings | None = None) -> None:
+    def __init__(self, settings: Settings | None = None, *, rate_per_s: float = 5.0) -> None:
         """Creates the gateway HTTP client, rate limiter, and a signer when keys are set."""
         self.settings = settings or get_settings()
         self._http = httpx.AsyncClient(base_url=GATEWAY_URL, timeout=self.settings.http_timeout_s)
-        self._limiter = TokenBucket(rate=20, capacity=20)
+        self._limiter = TokenBucket(rate=rate_per_s, capacity=rate_per_s)
         s = self.settings
         self.signer = None
         if s.polymarket_us_key_id and s.polymarket_us_secret_key:

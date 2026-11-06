@@ -27,8 +27,8 @@ uv run moneymaker match --scope crypto --no-jev   # candidates + pricing only
 uv run moneymaker review                          # approve / reject pairs interactively
 ```
 
-Needs `TYPESAFE_API_KEY` for Jev and `OPENROUTER_API_KEY` for Nemotron embeddings (falls back to a
-local model without it). Scopes: crypto, economics, politics, sports, culture, climate, tech.
+Needs `TYPESAFE_API_KEY` for Jev and `GEMINI_API_KEY` for `gemini-embedding-2` embeddings (falls
+back to a local model without it; set `EMBEDDING_MODEL` to use an OpenRouter model instead). Scopes: crypto, economics, politics, sports, culture, climate, tech.
 
 ## Tests
 

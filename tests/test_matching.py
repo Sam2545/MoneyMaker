@@ -8,6 +8,8 @@ import respx
 from moneymaker.matching.candidates import generate
 from moneymaker.matching.embed import Embedder, market_text
 from moneymaker.matching.extract import Check, compare, describe
+from moneymaker.matching.gemini import API_URL as GEMINI_URL
+from moneymaker.matching.gemini import GeminiEncoder
 from moneymaker.matching.openrouter import API_URL as OR_URL
 from moneymaker.matching.openrouter import OpenRouterEncoder
 from moneymaker.matching.review import review
@@ -113,6 +115,26 @@ def test_store_keeps_user_decision_and_suspends_on_change():
     s.record_decision("K", "P", "approved_equivalent", relation="equivalent", polarity="same")
     assert s.upsert_routed("K", "P", "h1", 0.9, Routed("uncertain")) == "approved_equivalent"
     assert s.upsert_routed("K", "P", "h2", 0.9, Routed("pending_review")) == "suspended"
+
+
+@respx.mock
+def test_gemini_encoder_batches_with_similarity_task():
+    """When embedding with Gemini, it should batch requests and set the similarity task."""
+    route_ = respx.post(f"{GEMINI_URL}/models/gemini-embedding-2:batchEmbedContents").mock(
+        side_effect=lambda request: httpx.Response(200, json={"embeddings": [
+            {"values": [float(i), 1.0]} for i in range(len(json.loads(request.content)["requests"]))
+        ]}))
+    enc = GeminiEncoder("key", batch_size=2)
+    out = enc(["a", "b", "c"])
+    enc.close()
+    first = json.loads(route_.calls[0].request.content)["requests"][0]
+    assert route_.call_count == 2 and out.shape == (3, 2)
+    assert first["content"]["parts"][0]["text"] == "task: sentence similarity | query: a"
+    assert first["output_dimensionality"] == 768
+    assert route_.calls[0].request.headers["x-goog-api-key"] == "key"
+    legacy = GeminiEncoder("key", "gemini-embedding-001")._request("a")
+    assert legacy["task_type"] == "SEMANTIC_SIMILARITY"
+    assert legacy["content"]["parts"][0]["text"] == "a"
 
 
 @respx.mock

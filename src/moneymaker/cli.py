@@ -124,6 +124,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     p.add_argument("--jev-limit", type=int, help="maximum new Jev calls this run")
     p.add_argument("--window-days", type=float, default=30.0)
     p.add_argument("--top-k", type=int, default=5)
+    p.add_argument("--match", dest="include", help="only markets whose id or title matches REGEX")
 
     p = sub.add_parser("review", help="review matched pairs and record decisions")
     p.add_argument(
@@ -150,7 +151,7 @@ def main(argv: Sequence[str] | None = None) -> None:
 
             run = asyncio.run(run_match(
                 args.scope, use_jev=not args.no_jev, jev_limit=args.jev_limit,
-                window_days=args.window_days, top_k=args.top_k,
+                window_days=args.window_days, top_k=args.top_k, include=args.include,
             ))
             print_match_summary(run)
         else:

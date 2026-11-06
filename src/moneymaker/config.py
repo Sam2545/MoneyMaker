@@ -22,8 +22,9 @@ class Settings(BaseSettings):
     typesafe_model: str = "jev-1.14.0"
     match_db_path: Path = Path("data/matches.db")
 
+    gemini_api_key: SecretStr | None = None
     openrouter_api_key: SecretStr | None = None
-    embedding_model: str = "nvidia/nemotron-3.5-embed-8b:free"
+    embedding_model: str = "gemini-embedding-2"
 
     http_timeout_s: float = 10.0
     ws_ping_interval_s: float = 10.0
