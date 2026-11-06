@@ -7,7 +7,7 @@ from datetime import datetime
 import numpy as np
 
 from moneymaker.matching.embed import Embedder, market_text
-from moneymaker.matching.extract import Check, compare, describe
+from moneymaker.matching.extract import Check, compare, compare_methods, describe
 from moneymaker.models import Market
 
 
@@ -81,6 +81,10 @@ def generate(
         for j in scan[np.argsort(-row[scan])]:
             stats.proposed += 1
             check = compare(k_specs[j], pm_spec)
+            if check.result != "reject":
+                method_check = compare_methods(kalshi[j], pm_market)
+                if method_check.result == "reject":
+                    check = method_check
             if check.result == "reject":
                 stats.rejected[check.reason] += 1
                 continue

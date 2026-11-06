@@ -166,6 +166,8 @@ to the store so the review screen works offline.
      up-strike / higher down-strike is the broader market);
    - plain titles with disjoint strike numbers are rejected;
    - an "X vs Y" matchup must share a participant with the other market.
+   - rules that average the settlement price differently (simple average vs trimmed mean) are
+     rejected, by user decision on 2026-11-06.
 
 ### 4.3 Classification (`matching/jev.py`)
 

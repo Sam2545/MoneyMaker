@@ -123,6 +123,27 @@ def describe(market: Market) -> Spec:
     return Spec("plain", numbers=numbers, parties=parties, text=raw)
 
 
+_TRIMMED = re.compile(r"trimmed mean", re.I)
+_SIMPLE = re.compile(r"simple average|the average of these prices", re.I)
+
+
+def settlement_method(rules: str) -> str | None:
+    """Returns 'trimmed' or 'simple' when the rules name how the settlement price is averaged."""
+    if _TRIMMED.search(rules):
+        return "trimmed"
+    if _SIMPLE.search(rules):
+        return "simple"
+    return None
+
+
+def compare_methods(kalshi: Market, pm: Market) -> Check:
+    """Rejects pairs whose rules average the settlement price differently (simple vs trimmed)."""
+    a, b = settlement_method(kalshi.rules), settlement_method(pm.rules)
+    if a and b and a != b:
+        return Check("reject", "different averaging method")
+    return Check("ok")
+
+
 def _close(a: Decimal | None, b: Decimal | None) -> bool:
     """Returns True when two strikes are equal within a cent or one part per million."""
     if a is None or b is None:

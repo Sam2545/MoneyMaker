@@ -57,6 +57,16 @@ def test_shape_compare(kalshi, poly, result):
     assert compare(describe(kalshi), describe(poly)).result == result
 
 
+def test_mixed_averaging_methods_are_rejected():
+    """When one market uses a simple average and the other a trimmed mean, it should reject."""
+    from moneymaker.matching.extract import compare_methods
+    simple = km("BTC EOY", rules="the simple average of the sixty seconds of BRTI")
+    trimmed = pm("BTC EOY", rules="BRTI using a trimmed mean calculation over sixty seconds")
+    assert compare_methods(simple, trimmed).reason == "different averaging method"
+    assert compare_methods(simple, pm("BTC", rules="simple average of BRTI")).result == "ok"
+    assert compare_methods(simple, pm("BTC", rules="settles on the official result")).result == "ok"
+
+
 def test_threshold_implication_names_broader_side():
     """When thresholds share a direction, it should mark the lower up-strike as broader."""
     check = compare(describe(km("BTC above $150k", "Above $150k")),
