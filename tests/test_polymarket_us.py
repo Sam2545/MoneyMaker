@@ -113,3 +113,22 @@ async def test_list_markets_paginates_and_get_orderbook():
     book = await client.get_orderbook("last")
     assert book.best_ask() == (D("0.1820"), D("2.0000"))
     await client.aclose()
+
+
+async def test_snapshot_books_collects_one_book_per_market():
+    """When the stream repeats markets, it should return one synced book per wanted market."""
+    client = PolymarketUSClient(Settings(_env_file=None))
+    client.signer = object()
+
+    async def fake_stream(ids):
+        """Yields books for a, a again, then b."""
+        for slug in ["a", "a", "b"]:
+            book = OrderBook(parse_market(MARKET).venue, slug)
+            apply_market_data(book, BOOK["marketData"])
+            yield book
+
+    client._stream_ws = fake_stream
+    books = await client.snapshot_books(["a", "b"], timeout_s=5)
+    await client.aclose()
+    assert sorted(books) == ["a", "b"]
+    assert books["b"].best_ask() == (D("0.1820"), D("2.0000"))

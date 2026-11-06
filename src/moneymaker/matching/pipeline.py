@@ -249,7 +249,7 @@ async def run_match(
 
         run.results = list(await asyncio.gather(*(classify(c) for c in candidates)))
 
-        books: dict[tuple[str, str], asyncio.Task[OrderBook]] = {}
+        books: dict[tuple[str, str], asyncio.Future[OrderBook]] = {}
         sem = asyncio.Semaphore(4)
 
         async def fetch_book(venue: str, market_id: str) -> OrderBook:
@@ -264,6 +264,17 @@ async def run_match(
             if key not in books:
                 books[key] = asyncio.create_task(fetch_book(venue, market_id))
             return await books[key]
+
+        pm_needed = sorted({
+            r.candidate.pm.venue_market_id for r in run.results if r.status not in UNPRICED
+        })
+        if pm.signer is not None and pm_needed:
+            ws_books = await pm.snapshot_books(pm_needed)
+            log.info("match.pm_ws_books", got=len(ws_books), wanted=len(pm_needed))
+            for slug, b in ws_books.items():
+                done: asyncio.Future[OrderBook] = asyncio.get_running_loop().create_future()
+                done.set_result(b)
+                books[("pm", slug)] = done
 
         async def price(r: PairResult) -> None:
             """Prices one pair in its tradable direction(s) and records the observation."""

@@ -176,6 +176,31 @@ class PolymarketUSClient:
             return self.poll_orderbooks(venue_market_ids)
         return self._stream_ws(venue_market_ids)
 
+    async def snapshot_books(
+        self, venue_market_ids: Sequence[str], timeout_s: float = 45.0
+    ) -> dict[str, OrderBook]:
+        """Returns one book per market from a single WebSocket subscription.
+
+        Markets with no snapshot before timeout_s are left out. Requires API keys.
+        """
+        if self.signer is None:
+            raise RuntimeError("Polymarket US WebSocket requires POLYMARKET_US_KEY_ID and secret")
+        wanted = set(venue_market_ids)
+        got: dict[str, OrderBook] = {}
+        stream = self._stream_ws(list(wanted))
+        try:
+            async with asyncio.timeout(timeout_s):
+                async for book in stream:
+                    if book.synced and book.venue_market_id in wanted:
+                        got[book.venue_market_id] = book
+                        if len(got) == len(wanted):
+                            break
+        except TimeoutError:
+            log.warning("polymarket_us.snapshot_timeout", got=len(got), wanted=len(wanted))
+        finally:
+            await stream.aclose()
+        return got
+
     async def poll_orderbooks(
         self, venue_market_ids: Sequence[str], interval_s: float = 2.0
     ) -> AsyncIterator[OrderBook]:
