@@ -128,7 +128,8 @@ uv run moneymaker stream  {kalshi|polymarket_us} <market_id> [<market_id> ...]
 
 Matching is the main source of loss. A false positive turns a riskless arb into two correlated
 losing bets, so the pipeline is tuned for **precision**: missing a match only costs opportunity.
-**Nothing is tradable until a human approves it.**
+**Nothing is tradable until a human approves it, or it matches a template the human approved
+(§4.4).**
 
 ```
 fetch (scoped) → candidates (embeddings + shape checks) → Jev (cached) → routing → pricing → report
@@ -195,13 +196,36 @@ everything Jev sees, so an edited market is reclassified automatically. Cost is 
 | `rejected` | `same_event < 0.25`, or `P(polarity = neither) ≥ 0.80` (shape-check rejects never reach Jev) |
 | `uncertain` | swap test disagrees; `measurement_definition` / `scope` ≥ 0.50; any approve gate missed; all implication candidates |
 | `pending_review` | every gate passes: `same_event ≥ 0.97`, polarity ≥ 0.98 and not `neither`, `divergence ≤ 0.03`, `same_source ≥ 0.90`, `deadline = identical` ≥ 0.95, `S = same_event × p(polarity) × (1 − divergence) ≥ 0.95` |
+| `auto_approved` | an `uncertain` / `pending_review` pair with no user decision that matches a user-approved template and passes the template checks below; stored as an equivalent with the template's polarity |
 | `approved_equivalent` / `approved_implication` | **only** set by `moneymaker review` |
 | `suspended` | an approved pair whose inputs hash changed; back in the review queue |
 | `unclassified` | no Jev key, Jev error, or `--jev-limit` reached |
 
 Divergence kinds ≥ 0.15 are listed as flags on the pair. Expected next steps: calibrate the
-thresholds against ≥ 200 labelled pairs (target ≥ 99.5% precision in the approve band) before any
-auto-approval, and add code-level checks for `cutoff_time` / `threshold_boundary`.
+thresholds against ≥ 200 labelled pairs (target ≥ 99.5% precision in the approve band), and add
+code-level checks for `cutoff_time` / `threshold_boundary`.
+
+**Template auto-approval (`matching/autoapprove.py`, `[auto]` in `thresholds.toml`).** A rules
+*fingerprint* is the lowercased rules text with URLs, asset names (`<asset>`), CF index names and
+codes such as `BRTI` / `ETHUSD_RTI` (`<index>`), month and weekday names, ET/EST/EDT (`<tz>`),
+and every number or clock time (`#`) masked. A *template* is a (Kalshi fingerprint, PM
+fingerprint) pair; each run builds the map from the user's `approved_equivalent` decisions,
+recording the approved polarity, the count and the lowest Jev `same_event` among them. A user
+rejection with the same fingerprints (other than bulk `rule:` rejections) or a second polarity
+marks the template conflicted. Because assets are masked, an ETH pair inherits an approved BTC
+template. A pair is auto-approved only when all of these hold:
+
+- the template is known, not conflicted and has ≥ `min_examples` approvals;
+- the shape check is `ok` (not an implication) and both rules name the same assets;
+- the UTC settlement instants parsed from both rules (`5 PM EST on Nov 6, 2026`,
+  `Dec 31, 2026 at 11:59 PM ET`, ...) are equal and non-empty, so an 11:59 PM vs midnight
+  pair is refused;
+- `settlement_method` (simple vs trimmed) is equal;
+- Jev polarity equals the template's, `polarity_p ≥ polarity_min`, and
+  `same_event ≥ max(same_event_floor, template minimum − same_event_margin)`.
+
+User decisions always win: pairs with any user decision are never auto-approved, and a review
+decision overwrites `auto_approved`.
 
 ### 4.5 Pricing and report
 

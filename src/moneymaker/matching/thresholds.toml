@@ -19,3 +19,11 @@ same_event_max_diff = 0.05
 list_min = 0.15
 always_uncertain = ["measurement_definition", "scope"]
 always_uncertain_min = 0.50
+
+# Template auto-approval (matching/autoapprove.py).
+[auto]
+enabled = true
+min_examples = 1
+polarity_min = 0.90
+same_event_margin = 0.15
+same_event_floor = 0.25

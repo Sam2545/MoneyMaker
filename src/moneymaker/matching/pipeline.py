@@ -16,6 +16,7 @@ import structlog
 from moneymaker.config import Settings, get_settings
 from moneymaker.edge import Edge, Leg, best_edge, price_pair
 from moneymaker.fees import FeeModel
+from moneymaker.matching.autoapprove import AUTO_STATUSES, AutoApprover
 from moneymaker.matching.candidates import Candidate, CandidateStats, generate
 from moneymaker.matching.embed import MODEL_NAME as LOCAL_EMBED_MODEL
 from moneymaker.matching.embed import Embedder
@@ -150,6 +151,27 @@ def legs_for(
     return None
 
 
+def auto_approve(
+    approver: AutoApprover, store: MatchStore, c: Candidate, routed: Routed
+) -> Routed:
+    """Returns an auto_approved equivalent when the approver accepts an undecided pair.
+
+    Pairs outside uncertain/pending_review, or with a stored user decision, are returned as is.
+    """
+    if not approver.enabled or routed.status not in AUTO_STATUSES:
+        return routed
+    row = store.get_match(c.kalshi.venue_market_id, c.pm.venue_market_id)
+    if row is not None and row["decided_by"] == "user":
+        return routed
+    decision = approver.check(c.kalshi, c.pm, c.check, routed)
+    if not decision.approved:
+        return routed
+    return Routed(
+        "auto_approved", relation="equivalent", polarity=decision.polarity,
+        scores=routed.scores, flags=routed.flags, reasons=decision.reasons,
+    )
+
+
 async def run_match(
     scope: str,
     *,
@@ -208,6 +230,9 @@ async def run_match(
             run_id, scope, stats, embedded=embedder.computed, embedding_model=embedder.model_name
         )
         log.info("match.candidates", kept=stats.kept, proposed=stats.proposed)
+        approver = AutoApprover.from_store(store, thresholds)
+        log.info("match.auto_templates", templates=len(approver.templates),
+                 enabled=approver.enabled)
 
         async def classify(c: Candidate) -> PairResult:
             """Classifies and routes one candidate, using cached answers when available."""
@@ -238,6 +263,7 @@ async def run_match(
                         {"model": answers.model, "answers": answers.raw},
                     )
                 routed = route(answers, c.check, thresholds)
+                routed = auto_approve(approver, store, c, routed)
             status = store.upsert_routed(kid, pid, h, c.similarity, routed)
             row = store.get_match(kid, pid)
             if row is not None and row["decided_by"] == "user":
