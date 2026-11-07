@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import signal
 from collections import defaultdict
 from collections.abc import AsyncIterator, Callable, Sequence
 from dataclasses import dataclass
@@ -267,7 +268,7 @@ async def run_monitor(
 ) -> Monitor:
     """Runs the template matcher every refresh_min minutes and monitors approved pairs live.
 
-    Stops after duration_s seconds when given, otherwise runs until cancelled.
+    Stops after duration_s seconds when given, otherwise runs until cancelled or SIGTERM.
     """
     settings = settings or get_settings()
     store = MatchStore(settings.match_db_path)
@@ -280,6 +281,9 @@ async def run_monitor(
         {"kalshi": kalshi.stream_orderbooks, "pm": pm.stream_orderbooks}, monitor.on_book
     )
     loop = asyncio.get_running_loop()
+    stop = asyncio.Event()
+    with contextlib.suppress(NotImplementedError, RuntimeError):
+        loop.add_signal_handler(signal.SIGTERM, stop.set)
     started = loop.time()
     next_refresh = next_beat = started
     last_updates = 0
@@ -306,7 +310,7 @@ async def run_monitor(
             log.warning("monitor.summary_failed", error=repr(exc))
 
     try:
-        while duration_s is None or loop.time() - started < duration_s:
+        while not stop.is_set() and (duration_s is None or loop.time() - started < duration_s):
             now = loop.time()
             if now >= next_refresh and (refreshing is None or refreshing.done()):
                 refreshing = asyncio.create_task(refresh())
@@ -327,6 +331,8 @@ async def run_monitor(
                 next_beat = now + HEARTBEAT_S
             await asyncio.sleep(TICK_S)
     finally:
+        log.info("monitor.stopping", episodes_closed=monitor.tracker.closed,
+                 open_episodes=len(monitor.tracker.open))
         if refreshing is not None and not refreshing.done():
             refreshing.cancel()
             with contextlib.suppress(asyncio.CancelledError, Exception):
