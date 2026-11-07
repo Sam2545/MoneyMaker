@@ -247,7 +247,8 @@ immediately and survive reruns unless the market changes.
 ### 4.7 Store (`data/matches.db`, SQLite, gitignored)
 
 `embeddings`, `markets` (snapshots), `classifications` (Jev answers), `matches` (status, relation,
-polarity, direction, scores, flags, reasons, decided_by, note), `observations` (edge per run).
+polarity, direction, scores, flags, reasons, decided_by, note), `observations` (edge per run),
+`opportunities` (monitor episodes, §5.4).
 
 ### 4.8 Template matcher without AI (`matching/templates.py`, `moneymaker match-templates`)
 
@@ -326,6 +327,32 @@ gross spread alone.
 Capital is locked on **both** venues until settlement, and the two balances can't be netted. The engine
 ranks opportunities by annualized return `net_edge / capital_locked × 365 / days_to_settle` and
 enforces `min_annualized_return` (for example 15%), so it doesn't tie up capital for months to earn 1¢.
+
+### 5.4 Live opportunity monitor (`monitor.py`, `opportunities.py`, `moneymaker monitor`)
+
+Every `--refresh-min` minutes (default 5) the monitor runs the template matcher (§4.8) without
+REST pricing, then watches every `approved_equivalent`, `auto_approved` and
+`approved_implication` pair whose markets are both open in that fetch (and match `--match`) and
+whose close times have not passed. Implications are priced only in their safe direction.
+
+- Both legs stream over the venue WebSocket adapters, one consumer per venue. A consumer is
+  restarted only when its market set changes, and after any unexpected stream error; the
+  adapters themselves reconnect and resync on disconnects.
+- Every update to a book recomputes each pair that uses it with `price_pair` / `best_edge`
+  and `min_edge_per_contract = 0.2¢`, but only when both books are synced. Books are not
+  age-gated: a quiet Kalshi book is current until its next delta.
+- **Episodes.** An episode opens when the edge sizes ≥ 1 contract with net > 0 and closes on
+  the first update where it does not, or when a book loses sync, the pair is dropped, a market
+  closes, or the monitor stops (so episodes open at shutdown are cut at the stop time). Each
+  closed episode is a row in `opportunities`: pair, direction label, asset, template, start,
+  end, duration, max ¢/contract, max contracts, max net $, and capital and annualized return at
+  the max-net update.
+- `data/logs/opportunities-YYYY-MM-DD.{json,md}` summarize episodes that started on that local
+  date (counts per asset and template, duration buckets, total and median max-net $, top 10).
+  Today's files are rewritten after every refresh and at shutdown, and the previous day's at
+  midnight. `moneymaker opportunities [--hours 24]` prints the same summary from the table.
+- A `monitor.heartbeat` line every minute logs pairs, synced books, open and closed episodes,
+  book updates in the last minute and pricing errors. A failing pair is logged and skipped.
 
 ## 6. Phase 4 — paper trading
 

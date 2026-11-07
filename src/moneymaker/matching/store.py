@@ -69,7 +69,31 @@ CREATE TABLE IF NOT EXISTS observations (
     annualized REAL
 );
 CREATE INDEX IF NOT EXISTS observations_pair ON observations (kalshi_id, pm_id, observed_at);
+CREATE TABLE IF NOT EXISTS opportunities (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    kalshi_id TEXT NOT NULL,
+    pm_id TEXT NOT NULL,
+    label TEXT NOT NULL,
+    asset TEXT,
+    template TEXT,
+    started_at TEXT NOT NULL,
+    ended_at TEXT NOT NULL,
+    duration_s REAL NOT NULL,
+    max_cents_per_contract REAL NOT NULL,
+    max_contracts REAL NOT NULL,
+    max_net REAL NOT NULL,
+    capital_at_max REAL NOT NULL,
+    annualized_at_max REAL,
+    updates INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS opportunities_started ON opportunities (started_at);
 """
+
+OPPORTUNITY_FIELDS = (
+    "kalshi_id", "pm_id", "label", "asset", "template", "started_at", "ended_at", "duration_s",
+    "max_cents_per_contract", "max_contracts", "max_net", "capital_at_max", "annualized_at_max",
+    "updates",
+)
 
 APPROVED = ("approved_equivalent", "approved_implication")
 USER_STATUSES = (*APPROVED, "rejected", "uncertain")
@@ -303,3 +327,21 @@ class MatchStore:
             r["status"]: r["n"]
             for r in self.db.execute("SELECT status, COUNT(*) AS n FROM matches GROUP BY status")
         }
+
+    def add_opportunity(self, row: dict[str, Any]) -> None:
+        """Stores one closed opportunity episode given as a dict of OPPORTUNITY_FIELDS."""
+        self.db.execute(
+            f"INSERT INTO opportunities ({', '.join(OPPORTUNITY_FIELDS)}) "
+            f"VALUES ({', '.join('?' * len(OPPORTUNITY_FIELDS))})",
+            [row[k] for k in OPPORTUNITY_FIELDS],
+        )
+        self.db.commit()
+
+    def opportunities_between(self, start: str, end: str) -> list[dict[str, Any]]:
+        """Returns episodes whose ISO start time is in [start, end), oldest first."""
+        rows = self.db.execute(
+            "SELECT * FROM opportunities WHERE started_at >= ? AND started_at < ? "
+            "ORDER BY started_at",
+            (start, end),
+        )
+        return [dict(r) for r in rows]

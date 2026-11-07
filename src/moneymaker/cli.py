@@ -4,6 +4,7 @@ import argparse
 import asyncio
 import logging
 from collections.abc import Sequence
+from pathlib import Path
 
 import structlog
 
@@ -133,6 +134,18 @@ def main(argv: Sequence[str] | None = None) -> None:
     p.add_argument("--match", dest="include", help="only markets whose id or title matches REGEX")
     p.add_argument("--full", action="store_true", help="fetch every Kalshi series in scope")
 
+    p = sub.add_parser("monitor", help="stream approved pairs and record opportunity episodes")
+    p.add_argument("--scope", choices=sorted(SCOPES), required=True)
+    p.add_argument("--match", dest="include", help="only markets whose id or title matches REGEX")
+    p.add_argument("--refresh-min", type=float, default=5.0,
+                   help="minutes between template-matcher refreshes")
+    p.add_argument("--duration-s", type=float, help="stop after this many seconds")
+    p.add_argument("--log-dir", type=Path, default=Path("data/logs"),
+                   help="directory for the daily opportunity summaries")
+
+    p = sub.add_parser("opportunities", help="summarize recorded opportunity episodes")
+    p.add_argument("--hours", type=float, default=24.0)
+
     p = sub.add_parser("review", help="review matched pairs and record decisions")
     p.add_argument(
         "--status", action="append",
@@ -170,6 +183,23 @@ def main(argv: Sequence[str] | None = None) -> None:
                 args.scope, include=args.include, force_full=args.full,
             ))
             print("\n".join(summary_lines(tpl_run)))
+        elif args.cmd == "monitor":
+            from moneymaker.monitor import run_monitor
+
+            asyncio.run(run_monitor(
+                args.scope, include=args.include, refresh_min=args.refresh_min,
+                duration_s=args.duration_s, log_dir=args.log_dir,
+            ))
+        elif args.cmd == "opportunities":
+            from moneymaker.config import get_settings
+            from moneymaker.matching.store import MatchStore
+            from moneymaker.monitor import opportunities_report
+
+            store = MatchStore(get_settings().match_db_path)
+            try:
+                print(opportunities_report(store, args.hours), end="")
+            finally:
+                store.close()
         else:
             from moneymaker.config import get_settings
             from moneymaker.matching.review import DEFAULT_STATUSES, review

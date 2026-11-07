@@ -29,6 +29,17 @@ uv run moneymaker review --status auto_approved   # audit pairs auto-approved fr
 uv run moneymaker match-templates --scope crypto  # approve + price new template instances, no AI
 ```
 
+## Opportunity monitor
+
+```bash
+uv run moneymaker monitor --scope crypto --match "btc|bitcoin|eth|sol|xrp"   # needs both venues' keys
+uv run moneymaker opportunities --hours 24        # summary of recorded episodes
+```
+
+The monitor reruns `match-templates` every 5 minutes (`--refresh-min`), streams both legs of every
+approved pair and records each fee-adjusted opportunity episode in the `opportunities` table, with
+daily summaries in `data/logs/opportunities-YYYY-MM-DD.{json,md}`; see DESIGN.md §5.4.
+
 Pairs whose rules match a template you already approved (same wording with only asset, strike
 and dates differing) are stored as `auto_approved` when deterministic checks agree; see
 DESIGN.md §4.4.
