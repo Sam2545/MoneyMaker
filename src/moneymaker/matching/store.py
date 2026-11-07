@@ -183,7 +183,14 @@ class MatchStore:
         ).fetchone()
 
     def upsert_routed(
-        self, kalshi_id: str, pm_id: str, inputs_hash: str, similarity: float, routed: Routed
+        self,
+        kalshi_id: str,
+        pm_id: str,
+        inputs_hash: str,
+        similarity: float,
+        routed: Routed,
+        *,
+        commit: bool = True,
     ) -> str:
         """Merges a routing decision into the stored match and returns the resulting status.
 
@@ -222,7 +229,8 @@ class MatchStore:
                 json.dumps(reasons), decided_by, now_iso(),
             ),
         )
-        self.db.commit()
+        if commit:
+            self.db.commit()
         return status
 
     def record_decision(
@@ -250,7 +258,9 @@ class MatchStore:
             raise KeyError(f"no match for {kalshi_id} / {pm_id}")
         self.db.commit()
 
-    def add_observation(self, run_id: str, kalshi_id: str, pm_id: str, edge: Any) -> None:
+    def add_observation(
+        self, run_id: str, kalshi_id: str, pm_id: str, edge: Any, *, commit: bool = True
+    ) -> None:
         """Stores one priced edge for a pair."""
         self.db.execute(
             "INSERT INTO observations (run_id, observed_at, kalshi_id, pm_id, label, contracts, "
@@ -263,7 +273,8 @@ class MatchStore:
                 float(edge.capital), None if edge.annualized is None else float(edge.annualized),
             ),
         )
-        self.db.commit()
+        if commit:
+            self.db.commit()
 
     def review_queue(self, statuses: Iterable[str], limit: int | None = None) -> list[sqlite3.Row]:
         """Returns matches in the given statuses, highest latest net edge first."""

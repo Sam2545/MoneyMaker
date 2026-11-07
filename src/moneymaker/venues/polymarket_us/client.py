@@ -17,6 +17,7 @@ from moneymaker.config import Settings, get_settings
 from moneymaker.models import Market, MarketStatus, Venue
 from moneymaker.orderbook import OrderBook
 from moneymaker.ratelimit import TokenBucket
+from moneymaker.venues.base import collect_books, merge_streams
 from moneymaker.venues.polymarket_us.auth import PolymarketUSSigner
 
 log = structlog.get_logger(__name__)
@@ -26,6 +27,7 @@ WS_URL = "wss://api.polymarket.us/v1/ws/markets"
 WS_PATH = "/v1/ws/markets"
 PAGE_SIZE = 100
 SUBSCRIBE_CHUNK = 50
+MAX_MARKETS_PER_CONNECTION = 10 * SUBSCRIBE_CHUNK
 HEARTBEAT_TIMEOUT_S = 30.0
 
 _STATUS = {
@@ -174,32 +176,30 @@ class PolymarketUSClient:
         if self.signer is None:
             log.warning("polymarket_us.no_keys_polling_rest")
             return self.poll_orderbooks(venue_market_ids)
-        return self._stream_ws(venue_market_ids)
+        return self._stream_sharded(venue_market_ids)
 
     async def snapshot_books(
         self, venue_market_ids: Sequence[str], timeout_s: float = 45.0
     ) -> dict[str, OrderBook]:
-        """Returns one book per market from a single WebSocket subscription.
+        """Returns one book per market from the WebSocket stream.
 
         Markets with no snapshot before timeout_s are left out. Requires API keys.
         """
         if self.signer is None:
             raise RuntimeError("Polymarket US WebSocket requires POLYMARKET_US_KEY_ID and secret")
-        wanted = set(venue_market_ids)
-        got: dict[str, OrderBook] = {}
-        stream = self._stream_ws(list(wanted))
-        try:
-            async with asyncio.timeout(timeout_s):
-                async for book in stream:
-                    if book.synced and book.venue_market_id in wanted:
-                        got[book.venue_market_id] = book
-                        if len(got) == len(wanted):
-                            break
-        except TimeoutError:
-            log.warning("polymarket_us.snapshot_timeout", got=len(got), wanted=len(wanted))
-        finally:
-            await stream.aclose()
-        return got
+        ids = sorted(set(venue_market_ids))
+        if not ids:
+            return {}
+        return await collect_books(self._stream_sharded(ids), ids, timeout_s, "polymarket_us")
+
+    def _stream_sharded(self, venue_market_ids: Sequence[str]) -> AsyncIterator[OrderBook]:
+        """Returns one merged stream over connections of at most MAX_MARKETS_PER_CONNECTION."""
+        ids = list(venue_market_ids)
+        shards = [
+            self._stream_ws(ids[i : i + MAX_MARKETS_PER_CONNECTION])
+            for i in range(0, len(ids), MAX_MARKETS_PER_CONNECTION)
+        ] or [self._stream_ws([])]
+        return merge_streams(shards)
 
     async def poll_orderbooks(
         self, venue_market_ids: Sequence[str], interval_s: float = 2.0

@@ -4,6 +4,7 @@ import asyncio
 import json
 import re
 from collections import Counter
+from collections.abc import Collection
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -42,6 +43,7 @@ SCOPES: dict[str, tuple[list[str], list[str]]] = {
     "tech": (["technology"], ["Science and Technology", "Companies"]),
 }
 UNPRICED = {"rejected"}
+IMPLICATION_RELATIONS = ("implication_candidate", "implication")
 
 
 @dataclass
@@ -90,9 +92,16 @@ def guess_polarity(c: Candidate) -> str | None:
 
 
 async def fetch_markets(
-    scope: str, kalshi: KalshiClient, pm: PolymarketUSClient
+    scope: str,
+    kalshi: KalshiClient,
+    pm: PolymarketUSClient,
+    *,
+    only_series: Collection[str] | None = None,
 ) -> tuple[list[Market], list[Market], FeeModel]:
-    """Fetches open markets in scope from both venues and builds the Kalshi fee model."""
+    """Fetches open markets in scope from both venues and builds the Kalshi fee model.
+
+    With only_series, only those in-scope Kalshi series are fetched.
+    """
     pm_categories, kalshi_categories = SCOPES[scope]
     series = await kalshi.list_series()
     multipliers = {
@@ -100,7 +109,11 @@ async def fetch_markets(
         for s in series
         if s.get("fee_multiplier") is not None
     }
-    tickers = [s["ticker"] for s in series if s.get("category") in kalshi_categories]
+    tickers = [
+        s["ticker"] for s in series
+        if s.get("category") in kalshi_categories
+        and (only_series is None or s["ticker"] in only_series)
+    ]
     sem = asyncio.Semaphore(8)
 
     async def one(t: str) -> list[Market]:
@@ -115,6 +128,14 @@ async def fetch_markets(
     k = [m for ms in kalshi_lists for m in ms if m.status is MarketStatus.OPEN]
     p = [m for m in pm_markets if m.status is MarketStatus.OPEN]
     return k, p, FeeModel(multipliers)
+
+
+def filter_markets(markets: list[Market], include: str | None) -> list[Market]:
+    """Returns the markets whose id or title matches the include regex, or all without one."""
+    if not include:
+        return markets
+    pattern = re.compile(include, re.IGNORECASE)
+    return [m for m in markets if pattern.search(f"{m.venue_market_id} {m.title}")]
 
 
 def remote_encoder(settings: Settings) -> GeminiEncoder | OpenRouterEncoder | None:
@@ -133,8 +154,11 @@ def remote_encoder(settings: Settings) -> GeminiEncoder | OpenRouterEncoder | No
 def legs_for(
     status: str, routed: Routed, c: Candidate, kb: OrderBook, pb: OrderBook
 ) -> tuple[str, Leg, Leg] | str | None:
-    """Returns one fixed (label, leg, leg) for implications, a polarity for equivalents, or None."""
-    if routed.relation == "implication_candidate":
+    """Returns one fixed (label, leg, leg) for implications, a polarity for equivalents, or None.
+
+    Both routed implication candidates and user-approved implications use the safe direction.
+    """
+    if routed.relation in IMPLICATION_RELATIONS:
         if routed.polarity != "same":
             return None
         if routed.direction == "kalshi_broader":
@@ -197,11 +221,8 @@ async def run_match(
     try:
         log.info("match.fetching", scope=scope)
         k_markets, p_markets, fee_model = await fetch_markets(scope, kalshi, pm)
-        if include:
-            pattern = re.compile(include, re.IGNORECASE)
-            keep = lambda m: bool(pattern.search(f"{m.venue_market_id} {m.title}"))  # noqa: E731
-            k_markets = [m for m in k_markets if keep(m)]
-            p_markets = [m for m in p_markets if keep(m)]
+        k_markets = filter_markets(k_markets, include)
+        p_markets = filter_markets(p_markets, include)
         store.put_markets(k_markets + p_markets)
         log.info("match.fetched", kalshi=len(k_markets), pm=len(p_markets))
 

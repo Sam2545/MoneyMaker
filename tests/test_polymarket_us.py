@@ -132,3 +132,24 @@ async def test_snapshot_books_collects_one_book_per_market():
     await client.aclose()
     assert sorted(books) == ["a", "b"]
     assert books["b"].best_ask() == (D("0.1820"), D("2.0000"))
+
+
+async def test_stream_shards_markets_across_connections():
+    """When more markets than one connection allows are streamed, it should merge shards."""
+    client = PolymarketUSClient(Settings(_env_file=None))
+    client.signer = object()
+    shards = []
+
+    async def fake_stream(ids):
+        """Records the shard and yields one book for its first market."""
+        shards.append(list(ids))
+        book = OrderBook(parse_market(MARKET).venue, ids[0])
+        apply_market_data(book, BOOK["marketData"])
+        yield book
+
+    client._stream_ws = fake_stream
+    ids = [f"m{i:04d}" for i in range(1200)]
+    books = await client.snapshot_books(ids, timeout_s=0.5)
+    await client.aclose()
+    assert [len(s) for s in shards] == [500, 500, 200]
+    assert sorted(books) == ["m0000", "m0500", "m1000"]

@@ -4,6 +4,7 @@ import json
 import re
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from functools import lru_cache
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -78,6 +79,7 @@ _TIME_THEN_DATE = re.compile(_time_re("t") + r",?\s+(?:on\s+)?" + _date_re("d"),
 _DATE_THEN_TIME = re.compile(_date_re("d") + r",?\s+(?:at\s+)?" + _time_re("t"), re.I)
 
 
+@lru_cache(maxsize=65536)
 def rules_fingerprint(text: str) -> str:
     """Returns the rules text with URLs, assets, index names, dates, timezones and numbers masked.
 
@@ -206,9 +208,18 @@ class AutoApprover:
         return cls(templates, thresholds.data.get("auto", {}))
 
     def check(
-        self, kalshi: Market, pm: Market, shape_check: Check, routed: Routed
+        self,
+        kalshi: Market,
+        pm: Market,
+        shape_check: Check,
+        routed: Routed,
+        *,
+        require_jev: bool = True,
     ) -> AutoDecision:
-        """Returns whether a pair can be auto-approved as an equivalent of a known template."""
+        """Returns whether a pair can be auto-approved as an equivalent of a known template.
+
+        With require_jev False the Jev score conditions are skipped and every other check applies.
+        """
         key = (rules_fingerprint(kalshi.rules), rules_fingerprint(pm.rules))
         tpl = self.templates.get(key)
         if not self.enabled:
@@ -231,22 +242,8 @@ class AutoApprover:
             refuse.append("settlement times differ")
         if settlement_method(kalshi.rules) != settlement_method(pm.rules):
             refuse.append("settlement methods differ")
-        scores = routed.scores or {}
-        same_event, polarity, polarity_p = (
-            scores.get("same_event"), scores.get("polarity"), scores.get("polarity_p")
-        )
-        if same_event is None or polarity is None or polarity_p is None:
-            refuse.append("Jev scores missing")
-        else:
-            floor = self.same_event_floor
-            if tpl.min_same_event is not None:
-                floor = max(floor, tpl.min_same_event - self.same_event_margin)
-            if polarity != tpl.polarity:
-                refuse.append(f"Jev polarity {polarity} != approved {tpl.polarity}")
-            if polarity_p < self.polarity_min:
-                refuse.append(f"polarity_p {polarity_p:.2f} < {self.polarity_min}")
-            if same_event < floor:
-                refuse.append(f"same_event {same_event:.2f} < {floor:.2f}")
+        if require_jev:
+            refuse.extend(self._jev_refusals(tpl, routed.scores or {}))
         if refuse:
             return AutoDecision(False, None, refuse)
         stamp = ", ".join(sorted(t.strftime("%Y-%m-%d %H:%M UTC") for t in k_times))
@@ -255,3 +252,22 @@ class AutoApprover:
             f"{tpl.examples[0]}",
             f"settlement times match ({stamp})",
         ])
+
+    def _jev_refusals(self, tpl: Template, scores: dict[str, Any]) -> list[str]:
+        """Returns the reasons the Jev scores fail the template's polarity and same_event gates."""
+        same_event, polarity, polarity_p = (
+            scores.get("same_event"), scores.get("polarity"), scores.get("polarity_p")
+        )
+        if same_event is None or polarity is None or polarity_p is None:
+            return ["Jev scores missing"]
+        refuse = []
+        floor = self.same_event_floor
+        if tpl.min_same_event is not None:
+            floor = max(floor, tpl.min_same_event - self.same_event_margin)
+        if polarity != tpl.polarity:
+            refuse.append(f"Jev polarity {polarity} != approved {tpl.polarity}")
+        if polarity_p < self.polarity_min:
+            refuse.append(f"polarity_p {polarity_p:.2f} < {self.polarity_min}")
+        if same_event < floor:
+            refuse.append(f"same_event {same_event:.2f} < {floor:.2f}")
+        return refuse

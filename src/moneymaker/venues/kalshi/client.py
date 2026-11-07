@@ -18,6 +18,7 @@ from moneymaker.config import Settings, get_settings
 from moneymaker.models import Market, MarketStatus, Venue
 from moneymaker.orderbook import ONE, OrderBook
 from moneymaker.ratelimit import TokenBucket
+from moneymaker.venues.base import collect_books
 from moneymaker.venues.kalshi.auth import KalshiSigner
 
 log = structlog.get_logger(__name__)
@@ -176,6 +177,18 @@ class KalshiClient:
                 "Kalshi WebSocket requires KALSHI_KEY_ID and KALSHI_PRIVATE_KEY_PATH"
             )
         return self._stream_ws(venue_market_ids)
+
+    async def snapshot_books(
+        self, venue_market_ids: Sequence[str], timeout_s: float = 30.0
+    ) -> dict[str, OrderBook]:
+        """Returns one book per market from a single WebSocket subscription.
+
+        Markets with no snapshot before timeout_s are left out. Requires API keys.
+        """
+        ids = sorted(set(venue_market_ids))
+        if not ids:
+            return {}
+        return await collect_books(self.stream_orderbooks(ids), ids, timeout_s, "kalshi")
 
     async def _stream_ws(self, venue_market_ids: Sequence[str]) -> AsyncIterator[OrderBook]:
         """Subscribes to orderbook_delta and yields each book on change.

@@ -26,6 +26,7 @@ uv run moneymaker match --scope crypto            # find, classify, price; write
 uv run moneymaker match --scope crypto --no-jev   # candidates + pricing only
 uv run moneymaker review                          # approve / reject pairs interactively
 uv run moneymaker review --status auto_approved   # audit pairs auto-approved from your templates
+uv run moneymaker match-templates --scope crypto  # approve + price new template instances, no AI
 ```
 
 Pairs whose rules match a template you already approved (same wording with only asset, strike

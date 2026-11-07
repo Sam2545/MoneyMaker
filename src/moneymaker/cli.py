@@ -126,6 +126,13 @@ def main(argv: Sequence[str] | None = None) -> None:
     p.add_argument("--top-k", type=int, default=5)
     p.add_argument("--match", dest="include", help="only markets whose id or title matches REGEX")
 
+    p = sub.add_parser(
+        "match-templates", help="approve and price pairs of approved templates without AI calls"
+    )
+    p.add_argument("--scope", choices=sorted(SCOPES), required=True)
+    p.add_argument("--match", dest="include", help="only markets whose id or title matches REGEX")
+    p.add_argument("--full", action="store_true", help="fetch every Kalshi series in scope")
+
     p = sub.add_parser("review", help="review matched pairs and record decisions")
     p.add_argument(
         "--status", action="append",
@@ -156,6 +163,13 @@ def main(argv: Sequence[str] | None = None) -> None:
                 window_days=args.window_days, top_k=args.top_k, include=args.include,
             ))
             print_match_summary(run)
+        elif args.cmd == "match-templates":
+            from moneymaker.matching.templates import run_match_templates, summary_lines
+
+            tpl_run = asyncio.run(run_match_templates(
+                args.scope, include=args.include, force_full=args.full,
+            ))
+            print("\n".join(summary_lines(tpl_run)))
         else:
             from moneymaker.config import get_settings
             from moneymaker.matching.review import DEFAULT_STATUSES, review

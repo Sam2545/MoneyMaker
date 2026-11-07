@@ -249,6 +249,34 @@ immediately and survive reruns unless the market changes.
 `embeddings`, `markets` (snapshots), `classifications` (Jev answers), `matches` (status, relation,
 polarity, direction, scores, flags, reasons, decided_by, note), `observations` (edge per run).
 
+### 4.8 Template matcher without AI (`matching/templates.py`, `moneymaker match-templates`)
+
+Once templates exist, new instances of them (the next hour, day or week, other assets) are
+matched deterministically, with **no embedding, Gemini, OpenRouter or Jev calls**. The AI
+pipeline (`moneymaker match`) is then only needed, run manually, to discover new templates.
+
+1. **Fetch.** Only Kalshi series that can carry a usable template's Kalshi fingerprint are
+   fetched: the series of stored snapshots with such a fingerprint, plus the series of every
+   user-approved pair. When no series is known, with `--full`, and every 6 hours inside the
+   monitor, every in-scope series is fetched and the series set is rebuilt. PM US is one
+   category-filtered listing. A crypto refresh is about 40 Kalshi and 15 PM requests.
+2. **Index.** Kalshi markets with a usable fingerprint are grouped by (`rules_assets`,
+   `settlement_instants`). Each PM market with a usable PM fingerprint looks up its own key, so
+   only markets with the same asset and identical instants are compared.
+3. **Match.** A pair needs `compare(describe(k), describe(p)).result == "ok"` and a known,
+   non-conflicted (Kalshi, PM) fingerprint template; `AutoApprover.check(require_jev=False)`
+   then repeats every template check except the Jev-score gates. Instant equality is strict,
+   so the yearly `KXBTCMAXY` template (11:59 PM Dec 31 vs midnight) stays refused.
+4. **Store.** Passing pairs become `auto_approved` with the reason "template match (no AI)".
+   Rows decided by the user, and `suspended` rows, are never changed, except that a
+   user-approved pair whose inputs hash changed is suspended, as in the pipeline.
+5. **Price.** Both venues' books come from WebSocket snapshots (REST without keys). PM US
+   allows 10 subscriptions of 50 markets per connection, so larger sets are sharded across
+   connections. Every priced pair is stored as an observation.
+
+User-approved implications (`relation = implication`) are priced only in their safe direction,
+like routed implication candidates.
+
 ## 5. Phase 3 — arbitrage engine (deterministic)
 
 ### 5.1 Opportunity
