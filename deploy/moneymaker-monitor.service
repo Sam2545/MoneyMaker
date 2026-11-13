@@ -1,0 +1,36 @@
+# Rendered by scripts/setup_vps.sh into /etc/systemd/system/moneymaker-monitor.service.
+# Override the monitor arguments with `sudo systemctl edit moneymaker-monitor` and
+# [Service] Environment="MONITOR_ARGS=--scope crypto --match btc|eth".
+[Unit]
+Description=MoneyMaker Kalshi/Polymarket US opportunity monitor
+Wants=network-online.target
+After=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=@USER@
+Group=@USER@
+WorkingDirectory=@REPO@
+Environment="PATH=@HOME@/.local/bin:/usr/local/bin:/usr/bin:/bin"
+Environment="UV_CACHE_DIR=@HOME@/.cache/uv"
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONDONTWRITEBYTECODE=1
+Environment="MONITOR_ARGS=@MONITOR_ARGS@"
+ExecStart=@HOME@/.local/bin/uv run --no-sync moneymaker monitor $MONITOR_ARGS
+Restart=always
+RestartSec=30
+KillSignal=SIGTERM
+TimeoutStopSec=30
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=moneymaker-monitor
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=read-only
+ReadWritePaths=@REPO@/data @HOME@/.cache/uv
+
+[Install]
+WantedBy=multi-user.target
