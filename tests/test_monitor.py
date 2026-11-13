@@ -8,7 +8,15 @@ from moneymaker.edge import Edge
 from moneymaker.matching.store import MatchStore, Routed
 from moneymaker.models import Venue
 from moneymaker.monitor import Monitor, MonitoredPair
-from moneymaker.opportunities import EpisodeTracker, bucket, render_markdown, summarize, write_daily
+from moneymaker.opportunities import (
+    EpisodeTracker,
+    bucket,
+    merge_episodes,
+    render_markdown,
+    render_text,
+    summarize,
+    write_daily,
+)
 from moneymaker.orderbook import OrderBook
 
 T0 = datetime(2026, 11, 7, 12, tzinfo=UTC)
@@ -160,12 +168,18 @@ def test_tracker_keeps_maxima_and_label_at_max():
     assert ep.row()["duration_s"] == 2.0
 
 
-def row(asset: str, template: str, duration: float, net: float, i: int = 0) -> dict:
-    """Returns an opportunity row for summary tests."""
+def row(
+    asset: str, template: str, duration: float, net: float, i: int = 0, *,
+    start: float | None = None, kalshi: str | None = None, pm: str | None = None,
+    label: str = "K-YES + PM-NO",
+) -> dict:
+    """Returns an opportunity row for summary tests, starting start seconds after T0."""
+    t = T0 + timedelta(seconds=i if start is None else start)
     return {
-        "kalshi_id": f"K{i}", "pm_id": f"P{i}", "label": "K-YES + PM-NO", "asset": asset,
-        "template": template, "started_at": f"2026-11-07T12:00:{i:02d}.000+00:00",
-        "ended_at": "x", "duration_s": duration, "max_cents_per_contract": 1.0,
+        "kalshi_id": kalshi or f"K{i}", "pm_id": pm or f"P{i}", "label": label, "asset": asset,
+        "template": template, "started_at": t.isoformat(timespec="milliseconds"),
+        "ended_at": (t + timedelta(seconds=duration)).isoformat(timespec="milliseconds"),
+        "duration_s": duration, "max_cents_per_contract": 1.0,
         "max_contracts": 10.0, "max_net": net, "capital_at_max": 9.0,
         "annualized_at_max": None, "updates": 3,
     }
@@ -177,7 +191,7 @@ def test_summary_aggregates_counts_buckets_dollars_and_top(tmp_path):
         row("btc", "A", 0.2, 1.0, 1), row("btc", "A", 3.0, 3.0, 2),
         row("eth", "B", 30.0, 0.5, 3), row("eth", "A", 120.0, 10.0, 4),
     ]
-    s = summarize(rows, start="s", end="e")
+    s = summarize(rows, start=T0.isoformat(), end=T0.isoformat())
     assert s["episodes"] == 4
     assert s["total_net"] == 14.5 and s["median_net"] == 2.0
     assert s["by_asset"] == {"btc": {"count": 2, "total_net": 4.0},
@@ -187,7 +201,7 @@ def test_summary_aggregates_counts_buckets_dollars_and_top(tmp_path):
     assert [r["pm_id"] for r in s["top"]] == ["P4", "P2", "P1", "P3"]
     assert bucket(5.0) == "5-60 s" and bucket(60.0) == "> 60 s"
     md = render_markdown(s)
-    assert "| eth | 2 | 10.50 |" in md and "K4 / P4" in md
+    assert "K4" in md and "↳ P4" in md
     json_path, md_path = write_daily(s, tmp_path, "2026-11-07")
     assert json.loads(json_path.read_text())["episodes"] == 4
     assert md_path.read_text() == md
@@ -197,6 +211,71 @@ def test_empty_summary_is_zero():
     """When there are no episodes, it should report zero totals."""
     s = summarize([], start="s", end="e")
     assert (s["episodes"], s["total_net"], s["median_net"]) == (0, 0, 0.0)
+
+
+def test_restart_splits_merge_into_one_episode():
+    """When one pair's episodes are split by short gaps, it should merge them into one."""
+    pair = {"kalshi": "K", "pm": "P"}
+    rows = [
+        row("btc", "A", 10.0, 1.0, start=0, **pair),
+        row("btc", "A", 5.0, 4.0, start=60, **pair),
+        row("btc", "A", 1.0, 2.0, start=100, **pair),
+        row("btc", "A", 1.0, 0.5, start=400, **pair),
+    ]
+    first, second = merge_episodes(rows, 120.0)
+    assert (first["merged"], first["duration_s"], first["max_net"]) == (3, 101.0, 4.0)
+    assert first["updates"] == 9 and first["ended_at"] == rows[2]["ended_at"]
+    assert (second["merged"], second["duration_s"]) == (1, 1.0)
+
+
+def test_distinct_directions_and_pairs_do_not_merge():
+    """When adjacent episodes differ in direction or pair, it should keep them apart."""
+    rows = [
+        row("btc", "A", 1.0, 1.0, start=0, kalshi="K", pm="P"),
+        row("btc", "A", 1.0, 1.0, start=2, kalshi="K", pm="P", label="K-NO + PM-YES"),
+        row("btc", "A", 1.0, 1.0, start=4, kalshi="K", pm="Q"),
+    ]
+    assert [r["merged"] for r in merge_episodes(rows, 120.0)] == [1, 1, 1]
+
+
+def test_filter_counts_apply_after_merging():
+    """When short raw episodes merge past the minimum, it should count them as kept."""
+    rows = [
+        row("btc", "A", 1.0, 1.0, start=0, kalshi="K", pm="P"),
+        row("btc", "A", 1.0, 2.0, start=3, kalshi="K", pm="P"),
+        row("eth", "B", 0.5, 5.0, start=0, kalshi="E", pm="F"),
+    ]
+    s = summarize(rows, start=T0.isoformat(), end=T0.isoformat(), merge_gap_s=120.0,
+                  min_seconds=2.0)
+    assert (s["episodes"], s["merged_episodes"], s["filtered_episodes"]) == (3, 2, 1)
+    assert s["filtered_total_net"] == 2.0 and s["filtered_median_net"] == 2.0
+    assert s["filtered_by_asset"] == {
+        "btc": {"episodes": 1, "filtered": 1, "filtered_net": 2.0},
+        "eth": {"episodes": 1, "filtered": 0, "filtered_net": 0.0},
+    }
+    assert s["merged_durations"]["< 1 s"] == 1 and s["merged_durations"]["1-5 s"] == 1
+    assert [r["kalshi_id"] for r in s["filtered_top"]] == ["K"]
+    assert summarize(rows, start="s", end="e", min_seconds=0.0)["filtered_episodes"] == 2
+    text = render_text(s)
+    assert "3 raw episodes → 2 merged (gaps ≤ 120 s) → 1 lasting ≥ 2 s" in text
+
+
+def test_rendered_tables_have_aligned_columns():
+    """When a summary renders, it should give every line of a table the same width."""
+    rows = [
+        row("btc", "Template A", 30.0, 1234.5, 1), row("ethereum", "B", 3.0, 0.25, 2),
+        row("sol", "C", 4000.0, 10.0, 3, kalshi="KXSOLD-26NOV1317-T99.9999-EXTRA-LONG-ID"),
+    ]
+    s = summarize(rows, start=T0.isoformat(), end=T0.isoformat())
+    text = render_text(s)
+    blocks = [b.splitlines() for b in text.split("\n\n")]
+    tables = [b[1:] for b in blocks if len(b) > 2 and set(b[2]) <= {"─", " "}]
+    assert len(tables) == 5
+    for table in tables:
+        table = [line for line in table if not line.startswith(("¢/ct", "max "))]
+        assert len({len(line) for line in table}) == 1, table
+    assert "1,234.50" in text and "01:06:40" not in text and "11-07 12:00:01" in text
+    assert max(len(line) for line in text.splitlines()) <= 120
 
 
 async def test_streams_resubscribe_only_when_ids_change(monkeypatch):

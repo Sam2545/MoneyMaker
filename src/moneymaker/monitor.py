@@ -21,11 +21,13 @@ from moneymaker.matching.store import MatchStore, Routed
 from moneymaker.matching.templates import TemplateMatcher, TemplateRun, price_edge
 from moneymaker.models import Market
 from moneymaker.opportunities import (
+    MERGE_GAP_S,
+    MIN_SECONDS,
     Episode,
     EpisodeTracker,
     iso,
     local_day_bounds,
-    render_markdown,
+    render_text,
     summarize,
     write_daily,
 )
@@ -347,9 +349,16 @@ async def run_monitor(
     return monitor
 
 
-def opportunities_report(store: MatchStore, hours: float) -> str:
-    """Returns the Markdown summary of episodes that started in the last hours."""
+def opportunities_report(
+    store: MatchStore, hours: float, *, merge_gap_s: float = MERGE_GAP_S,
+    min_seconds: float = MIN_SECONDS, show_all: bool = False,
+) -> str:
+    """Returns the plain-text summary of episodes that started in the last hours."""
     end = datetime.now(UTC)
     start = end - timedelta(hours=hours)
     rows = store.opportunities_between(iso(start), iso(end + timedelta(seconds=1)))
-    return render_markdown(summarize(rows, start=iso(start), end=iso(end)))
+    summary = summarize(
+        rows, start=iso(start), end=iso(end), merge_gap_s=merge_gap_s,
+        min_seconds=0.0 if show_all else min_seconds,
+    )
+    return render_text(summary, show_all=show_all)

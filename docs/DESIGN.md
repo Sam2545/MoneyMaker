@@ -348,9 +348,18 @@ whose close times have not passed. Implications are priced only in their safe di
   end, duration, max ¢/contract, max contracts, max net $, and capital and annualized return at
   the max-net update.
 - `data/logs/opportunities-YYYY-MM-DD.{json,md}` summarize episodes that started on that local
-  date (counts per asset and template, duration buckets, total and median max-net $, top 10).
-  Today's files are rewritten after every refresh and at shutdown, and the previous day's at
-  midnight. `moneymaker opportunities [--hours 24]` prints the same summary from the table.
+  date. Today's files are rewritten after every refresh and at shutdown, and the previous day's
+  at midnight. `moneymaker opportunities [--hours 24] [--merge-gap 120] [--min-seconds 2]
+  [--all]` prints the same summary from the table as aligned plain text.
+- **Summary.** The stored rows are untouched; the summary layer merges consecutive episodes of
+  the same pair and direction whose next start is within `--merge-gap` seconds of the previous
+  end (start to end, maxima of each max field, `merged` = raw episodes folded in), then keeps
+  merged episodes lasting at least `--min-seconds`. The report shows raw, merged and kept
+  counts with kept total and median max-net $, duration buckets over all merged episodes,
+  kept / all counts and kept $ per asset and per template, the top 10 kept episodes by max $
+  and the 5 longest. The JSON keeps the raw-row keys (`episodes`, `total_net`, `median_net`,
+  `by_asset`, `by_template`, `durations`, `top`) and adds `merged_*` and `filtered_*` keys; the
+  `.md` wraps the plain-text report in a code block.
 - A `monitor.heartbeat` line every minute logs pairs, synced books, open and closed episodes,
   book updates in the last minute and pricing errors. A failing pair is logged and skipped.
 

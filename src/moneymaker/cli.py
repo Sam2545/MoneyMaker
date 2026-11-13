@@ -145,6 +145,12 @@ def main(argv: Sequence[str] | None = None) -> None:
 
     p = sub.add_parser("opportunities", help="summarize recorded opportunity episodes")
     p.add_argument("--hours", type=float, default=24.0)
+    p.add_argument("--merge-gap", type=float, default=120.0,
+                   help="merge same-pair, same-direction episodes split by at most this many s")
+    p.add_argument("--min-seconds", type=float, default=2.0,
+                   help="hide merged episodes shorter than this many seconds")
+    p.add_argument("--all", dest="show_all", action="store_true",
+                   help="show every merged episode regardless of duration")
 
     p = sub.add_parser("review", help="review matched pairs and record decisions")
     p.add_argument(
@@ -197,7 +203,10 @@ def main(argv: Sequence[str] | None = None) -> None:
 
             store = MatchStore(get_settings().match_db_path)
             try:
-                print(opportunities_report(store, args.hours), end="")
+                print(opportunities_report(
+                    store, args.hours, merge_gap_s=args.merge_gap, min_seconds=args.min_seconds,
+                    show_all=args.show_all,
+                ), end="")
             finally:
                 store.close()
         else:

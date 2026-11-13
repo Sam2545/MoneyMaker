@@ -34,11 +34,18 @@ uv run moneymaker match-templates --scope crypto  # approve + price new template
 ```bash
 uv run moneymaker monitor --scope crypto --match "btc|bitcoin|eth|sol|xrp"   # needs both venues' keys
 uv run moneymaker opportunities --hours 24        # summary of recorded episodes
+uv run moneymaker opportunities --min-seconds 5 --merge-gap 60   # stricter filter, tighter merge
+uv run moneymaker opportunities --all             # include merged episodes of any length
 ```
 
 The monitor reruns `match-templates` every 5 minutes (`--refresh-min`), streams both legs of every
 approved pair and records each fee-adjusted opportunity episode in the `opportunities` table, with
 daily summaries in `data/logs/opportunities-YYYY-MM-DD.{json,md}`; see DESIGN.md §5.4.
+
+`opportunities` prints aligned plain-text tables: headline counts, duration buckets, per asset
+and per template, the top 10 episodes by max $ and the 5 longest. Episodes of the same pair and
+direction that restart within `--merge-gap` seconds (default 120) count as one, and merged
+episodes shorter than `--min-seconds` (default 2) are hidden unless `--all` is given.
 
 Pairs whose rules match a template you already approved (same wording with only asset, strike
 and dates differing) are stored as `auto_approved` when deterministic checks agree; see
