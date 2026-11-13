@@ -1,0 +1,29 @@
+# Routing thresholds for Jev answers. All probabilities are in [0, 1].
+
+[approve]
+same_event_min = 0.97
+polarity_min = 0.98
+divergence_max = 0.03
+same_source_min = 0.90
+deadline_identical_min = 0.95
+combined_min = 0.95
+
+[reject]
+same_event_max = 0.25
+polarity_neither_min = 0.80
+
+[swap]
+same_event_max_diff = 0.05
+
+[divergence_kinds]
+list_min = 0.15
+always_uncertain = ["measurement_definition", "scope"]
+always_uncertain_min = 0.50
+
+# Template auto-approval (matching/autoapprove.py).
+[auto]
+enabled = true
+min_examples = 1
+polarity_min = 0.90
+same_event_margin = 0.15
+same_event_floor = 0.25

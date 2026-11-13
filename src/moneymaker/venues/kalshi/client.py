@@ -18,6 +18,7 @@ from moneymaker.config import Settings, get_settings
 from moneymaker.models import Market, MarketStatus, Venue
 from moneymaker.orderbook import ONE, OrderBook
 from moneymaker.ratelimit import TokenBucket
+from moneymaker.venues.base import collect_books
 from moneymaker.venues.kalshi.auth import KalshiSigner
 
 log = structlog.get_logger(__name__)
@@ -129,12 +130,23 @@ class KalshiClient:
             return resp.json()
         raise AssertionError("unreachable")
 
-    async def list_markets(self, *, limit: int | None = None) -> list[Market]:
-        """Returns open binary markets, following the cursor until exhausted or limit is reached."""
+    async def list_series(self) -> list[dict[str, Any]]:
+        """Returns every Kalshi series with its category and fee settings."""
+        return (await self._get("/series", {})).get("series") or []
+
+    async def list_markets(
+        self, *, limit: int | None = None, series_ticker: str | None = None
+    ) -> list[Market]:
+        """Returns open binary markets, optionally for one series, following the cursor.
+
+        Stops when the cursor is exhausted or limit is reached.
+        """
         out: list[Market] = []
         cursor: str | None = None
         while True:
             params: dict[str, Any] = {"status": "open", "limit": PAGE_SIZE, "mve_filter": "exclude"}
+            if series_ticker:
+                params["series_ticker"] = series_ticker
             if cursor:
                 params["cursor"] = cursor
             data = await self._get("/markets", params)
@@ -165,6 +177,18 @@ class KalshiClient:
                 "Kalshi WebSocket requires KALSHI_KEY_ID and KALSHI_PRIVATE_KEY_PATH"
             )
         return self._stream_ws(venue_market_ids)
+
+    async def snapshot_books(
+        self, venue_market_ids: Sequence[str], timeout_s: float = 30.0
+    ) -> dict[str, OrderBook]:
+        """Returns one book per market from a single WebSocket subscription.
+
+        Markets with no snapshot before timeout_s are left out. Requires API keys.
+        """
+        ids = sorted(set(venue_market_ids))
+        if not ids:
+            return {}
+        return await collect_books(self.stream_orderbooks(ids), ids, timeout_s, "kalshi")
 
     async def _stream_ws(self, venue_market_ids: Sequence[str]) -> AsyncIterator[OrderBook]:
         """Subscribes to orderbook_delta and yields each book on change.

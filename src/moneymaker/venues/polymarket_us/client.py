@@ -17,6 +17,7 @@ from moneymaker.config import Settings, get_settings
 from moneymaker.models import Market, MarketStatus, Venue
 from moneymaker.orderbook import OrderBook
 from moneymaker.ratelimit import TokenBucket
+from moneymaker.venues.base import collect_books, merge_streams
 from moneymaker.venues.polymarket_us.auth import PolymarketUSSigner
 
 log = structlog.get_logger(__name__)
@@ -26,6 +27,7 @@ WS_URL = "wss://api.polymarket.us/v1/ws/markets"
 WS_PATH = "/v1/ws/markets"
 PAGE_SIZE = 100
 SUBSCRIBE_CHUNK = 50
+MAX_MARKETS_PER_CONNECTION = 10 * SUBSCRIBE_CHUNK
 HEARTBEAT_TIMEOUT_S = 30.0
 
 _STATUS = {
@@ -55,8 +57,25 @@ def _ts(v: str | None) -> datetime | None:
     return datetime.fromisoformat(v.replace("Z", "+00:00"))
 
 
+GENERIC_SIDES = {"yes", "no", "up", "down", "over", "under"}
+
+
+def side_labels(m: dict[str, Any]) -> tuple[str | None, str | None]:
+    """Returns the named (YES, NO) outcomes from marketSides, or (None, None) for Yes/No sides."""
+    sides = m.get("marketSides") or []
+    long = next((s.get("description") for s in sides if s.get("long")), None)
+    short = next((s.get("description") for s in sides if s.get("long") is False), None)
+    if not long or long.strip().lower() in GENERIC_SIDES:
+        return None, None
+    return long, short
+
+
 def parse_market(m: dict[str, Any]) -> Market:
-    """Converts a Polymarket US market payload to a normalized Market."""
+    """Converts a Polymarket US market payload to a normalized Market.
+
+    The YES label is the named long side (e.g. a team or player) when marketSides names one,
+    otherwise the market's title field (e.g. a price range).
+    """
     rules = "\n\n".join(x for x in (m.get("description"), m.get("rulesDisclaimer")) if x)
     question, title = m.get("question") or "", m.get("title") or ""
     full_title = f"{question}: {title}" if question and title and question != title else (
@@ -64,12 +83,14 @@ def parse_market(m: dict[str, Any]) -> Market:
     )
     tick = m.get("orderPriceMinTickSize")
     fee = m.get("feeCoefficient")
+    named_yes, named_no = side_labels(m)
     return Market(
         venue=Venue.POLYMARKET_US,
         venue_market_id=m["slug"],
         event_id=m.get("eventSlug") or m.get("seriesSlug"),
         title=full_title,
-        yes_label=title or None,
+        yes_label=named_yes or title or None,
+        no_label=named_no,
         rules=rules,
         close_time=_ts(m.get("endDate")),
         expiration_time=_ts(m.get("endDate")),
@@ -93,11 +114,11 @@ def apply_market_data(book: OrderBook, md: dict[str, Any]) -> None:
 class PolymarketUSClient:
     venue = Venue.POLYMARKET_US
 
-    def __init__(self, settings: Settings | None = None) -> None:
+    def __init__(self, settings: Settings | None = None, *, rate_per_s: float = 5.0) -> None:
         """Creates the gateway HTTP client, rate limiter, and a signer when keys are set."""
         self.settings = settings or get_settings()
         self._http = httpx.AsyncClient(base_url=GATEWAY_URL, timeout=self.settings.http_timeout_s)
-        self._limiter = TokenBucket(rate=20, capacity=20)
+        self._limiter = TokenBucket(rate=rate_per_s, capacity=rate_per_s)
         s = self.settings
         self.signer = None
         if s.polymarket_us_key_id and s.polymarket_us_secret_key:
@@ -120,15 +141,22 @@ class PolymarketUSClient:
             return resp.json()
         raise AssertionError("unreachable")
 
-    async def list_markets(self, *, limit: int | None = None) -> list[Market]:
-        """Returns active, unclosed markets, paging by offset until a short page or limit."""
+    async def list_markets(
+        self, *, limit: int | None = None, categories: Sequence[str] | None = None
+    ) -> list[Market]:
+        """Returns active, unclosed markets, optionally only in categories, paging by offset.
+
+        Stops at a short page or when limit is reached.
+        """
         out: list[Market] = []
         offset = 0
         while True:
-            data = await self._get(
-                "/v1/markets",
-                {"active": "true", "closed": "false", "limit": PAGE_SIZE, "offset": offset},
-            )
+            params: dict[str, Any] = {
+                "active": "true", "closed": "false", "limit": PAGE_SIZE, "offset": offset,
+            }
+            if categories:
+                params["categories[]"] = list(categories)
+            data = await self._get("/v1/markets", params)
             page = data.get("markets") or []
             out.extend(parse_market(m) for m in page if m.get("slug"))
             if len(page) < PAGE_SIZE or (limit is not None and len(out) >= limit):
@@ -148,7 +176,30 @@ class PolymarketUSClient:
         if self.signer is None:
             log.warning("polymarket_us.no_keys_polling_rest")
             return self.poll_orderbooks(venue_market_ids)
-        return self._stream_ws(venue_market_ids)
+        return self._stream_sharded(venue_market_ids)
+
+    async def snapshot_books(
+        self, venue_market_ids: Sequence[str], timeout_s: float = 45.0
+    ) -> dict[str, OrderBook]:
+        """Returns one book per market from the WebSocket stream.
+
+        Markets with no snapshot before timeout_s are left out. Requires API keys.
+        """
+        if self.signer is None:
+            raise RuntimeError("Polymarket US WebSocket requires POLYMARKET_US_KEY_ID and secret")
+        ids = sorted(set(venue_market_ids))
+        if not ids:
+            return {}
+        return await collect_books(self._stream_sharded(ids), ids, timeout_s, "polymarket_us")
+
+    def _stream_sharded(self, venue_market_ids: Sequence[str]) -> AsyncIterator[OrderBook]:
+        """Returns one merged stream over connections of at most MAX_MARKETS_PER_CONNECTION."""
+        ids = list(venue_market_ids)
+        shards = [
+            self._stream_ws(ids[i : i + MAX_MARKETS_PER_CONNECTION])
+            for i in range(0, len(ids), MAX_MARKETS_PER_CONNECTION)
+        ] or [self._stream_ws([])]
+        return merge_streams(shards)
 
     async def poll_orderbooks(
         self, venue_market_ids: Sequence[str], interval_s: float = 2.0

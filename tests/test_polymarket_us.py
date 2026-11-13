@@ -53,6 +53,23 @@ def test_parse_market():
     assert m.close_time.year == 2027
 
 
+def test_parse_market_uses_named_sides():
+    """When marketSides name a player, it should use them as the YES and NO labels."""
+    sports = {
+        **MARKET,
+        "question": "Who will win?",
+        "title": "Taylor Fritz vs Carlos Alcaraz",
+        "marketSides": [{"description": "Taylor Fritz", "long": True},
+                        {"description": "Carlos Alcaraz", "long": False}],
+    }
+    m = parse_market(sports)
+    assert (m.yes_label, m.no_label) == ("Taylor Fritz", "Carlos Alcaraz")
+    generic = {**MARKET, "marketSides": [{"description": "Yes", "long": True},
+                                         {"description": "No", "long": False}]}
+    assert (parse_market(generic).yes_label, parse_market(generic).no_label) == (
+        "Vancouver Whitecaps FC", None)
+
+
 def test_apply_market_data_yes_perspective():
     """When given a book payload, it should map it to YES levels and price NO at 1 - bid."""
     book = OrderBook(parse_market(MARKET).venue, MARKET["slug"])
@@ -96,3 +113,43 @@ async def test_list_markets_paginates_and_get_orderbook():
     book = await client.get_orderbook("last")
     assert book.best_ask() == (D("0.1820"), D("2.0000"))
     await client.aclose()
+
+
+async def test_snapshot_books_collects_one_book_per_market():
+    """When the stream repeats markets, it should return one synced book per wanted market."""
+    client = PolymarketUSClient(Settings(_env_file=None))
+    client.signer = object()
+
+    async def fake_stream(ids):
+        """Yields books for a, a again, then b."""
+        for slug in ["a", "a", "b"]:
+            book = OrderBook(parse_market(MARKET).venue, slug)
+            apply_market_data(book, BOOK["marketData"])
+            yield book
+
+    client._stream_ws = fake_stream
+    books = await client.snapshot_books(["a", "b"], timeout_s=5)
+    await client.aclose()
+    assert sorted(books) == ["a", "b"]
+    assert books["b"].best_ask() == (D("0.1820"), D("2.0000"))
+
+
+async def test_stream_shards_markets_across_connections():
+    """When more markets than one connection allows are streamed, it should merge shards."""
+    client = PolymarketUSClient(Settings(_env_file=None))
+    client.signer = object()
+    shards = []
+
+    async def fake_stream(ids):
+        """Records the shard and yields one book for its first market."""
+        shards.append(list(ids))
+        book = OrderBook(parse_market(MARKET).venue, ids[0])
+        apply_market_data(book, BOOK["marketData"])
+        yield book
+
+    client._stream_ws = fake_stream
+    ids = [f"m{i:04d}" for i in range(1200)]
+    books = await client.snapshot_books(ids, timeout_s=0.5)
+    await client.aclose()
+    assert [len(s) for s in shards] == [500, 500, 200]
+    assert sorted(books) == ["m0000", "m0500", "m1000"]
