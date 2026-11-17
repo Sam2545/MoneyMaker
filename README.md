@@ -168,7 +168,8 @@ laptop; the two would diverge with no way to merge them.
    ```
    Keep `KALSHI_PRIVATE_KEY_PATH=./secrets/kalshi.pem` in `.env`; the service runs from the repo.
 5. **Operate it** (`S=/home/moneymaker/MoneyMaker/scripts/setup_vps.sh`):
-   - `sudo $S status`: service state and the last 20 journal lines; `sudo $S logs` follows them.
+   - `sudo $S status`: service state, timers, heartbeat age, recent snapshots and the last 20
+     journal lines; `sudo $S logs` follows them.
    - Opportunities and grading, as the service user:
      ```bash
      sudo -u moneymaker -H bash -lc 'cd ~/MoneyMaker && uv run moneymaker opportunities --hours 24'
@@ -179,7 +180,21 @@ laptop; the two would diverge with no way to merge them.
      laptop checkout to `~/MoneyMaker` again and run `sudo $S update ~/MoneyMaker` (keeps `.env`,
      `secrets`, `data` and `.venv`).
    - `sudo $S restart`; `sudo systemctl stop moneymaker-monitor` stops it until the next boot;
-     `sudo $S uninstall` stops, disables and removes the unit but keeps the repo and data.
+     `sudo $S uninstall` stops, disables and removes the units but keeps the repo and data.
+6. **Backups.** `moneymaker-backup.timer` snapshots `data/matches.db` nightly at about 03:17 into
+   `data/backups/matches-<UTC>.db.gz`, checks each snapshot with `pragma integrity_check` and
+   keeps the newest 14 (`MONEYMAKER_BACKUP_KEEP` via `sudo systemctl edit moneymaker-backup`).
+   `sudo $S backup` takes one now. These stay on the VM, so also copy one off it regularly
+   from the laptop: `scripts/pull_backup.sh ubuntu@<ip>` snapshots, copies and verifies it into
+   `data/backups/`. To restore, stop the service, `gunzip -c` the snapshot over
+   `data/matches.db` as the `moneymaker` user, delete any `matches.db-wal` / `-shm`, and restart.
+7. **Liveness alerts.** The monitor writes `data/monitor.heartbeat` every minute.
+   `moneymaker-healthcheck.timer` runs `scripts/healthcheck.sh` every minute, which GETs
+   `MONITOR_PING_URL` from `.env` only while the heartbeat is under 3 minutes old and the
+   service is active. Point it at a dead-man's-switch check (for example a free
+   [healthchecks.io](https://healthchecks.io) check with a 1-minute period and a few minutes'
+   grace) so you are emailed when pings stop, whether the monitor wedged, crashed or the VM
+   disappeared. Without `MONITOR_PING_URL` the check still runs and logs, but nothing alerts.
 
 ## Tests
 

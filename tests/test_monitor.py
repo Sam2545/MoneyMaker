@@ -7,7 +7,7 @@ from test_autoapprove import ETH_K, ETH_P, market
 from moneymaker.edge import Edge
 from moneymaker.matching.store import MatchStore, Routed
 from moneymaker.models import Venue
-from moneymaker.monitor import Monitor, MonitoredPair
+from moneymaker.monitor import Monitor, MonitoredPair, touch_heartbeat
 from moneymaker.opportunities import (
     EpisodeTracker,
     bucket,
@@ -305,3 +305,16 @@ async def test_streams_resubscribe_only_when_ids_change(monkeypatch):
     assert calls[-1] == ["a", "b"]
     await streams.stop_all()
     assert not streams.tasks
+
+
+def test_touch_heartbeat_writes_iso_time_and_creates_parent(tmp_path):
+    path = tmp_path / "nested" / "monitor.heartbeat"
+    when = datetime(2026, 11, 17, 12, 0, tzinfo=UTC)
+    touch_heartbeat(path, when)
+    assert datetime.fromisoformat(path.read_text().strip()) == when
+
+
+def test_touch_heartbeat_ignores_unwritable_path(tmp_path):
+    blocker = tmp_path / "file"
+    blocker.write_text("")
+    touch_heartbeat(blocker / "monitor.heartbeat", datetime.now(UTC))

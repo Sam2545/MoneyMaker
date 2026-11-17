@@ -1,0 +1,26 @@
+# Rendered by scripts/setup_vps.sh into /etc/systemd/system/moneymaker-healthcheck.service.
+# Triggered by moneymaker-healthcheck.timer. Pings MONITOR_PING_URL from @REPO@/.env only
+# while the monitor's heartbeat is fresh, so silence is the alarm.
+[Unit]
+Description=MoneyMaker monitor heartbeat check and liveness ping
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=@USER@
+Group=@USER@
+WorkingDirectory=@REPO@
+Environment="PATH=/usr/local/bin:/usr/bin:/bin"
+ExecStart=@REPO@/scripts/healthcheck.sh --quiet
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=moneymaker-healthcheck
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=full
+ProtectHome=read-only
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX

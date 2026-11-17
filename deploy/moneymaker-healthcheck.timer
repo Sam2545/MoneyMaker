@@ -1,0 +1,12 @@
+# Rendered by scripts/setup_vps.sh into /etc/systemd/system/moneymaker-healthcheck.timer.
+[Unit]
+Description=Check the MoneyMaker monitor heartbeat every minute
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=1min
+AccuracySec=10s
+Unit=moneymaker-healthcheck.service
+
+[Install]
+WantedBy=timers.target
