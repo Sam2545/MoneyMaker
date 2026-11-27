@@ -318,3 +318,100 @@ def test_touch_heartbeat_ignores_unwritable_path(tmp_path):
     blocker = tmp_path / "file"
     blocker.write_text("")
     touch_heartbeat(blocker / "monitor.heartbeat", datetime.now(UTC))
+
+
+def stamped(book: OrderBook, exchange_s: float, received_s: float) -> OrderBook:
+    """Sets the book's exchange and receive times to T0 plus the given seconds."""
+    book.exchange_ts = T0 + timedelta(seconds=exchange_s)
+    book.updated_ts = T0 + timedelta(seconds=received_s)
+    return book
+
+
+def test_episode_records_opening_and_closing_leg_times():
+    """When books carry exchange times, it should store the trigger, other and closing legs."""
+    mon, _, store = setup()
+    mon.on_book("kalshi", stamped(kalshi_book("0.40"), 1.0, 1.05))
+    mon.on_book("pm", stamped(pm_book("0.50"), 2.0, 2.2))
+    mon.on_book("pm", stamped(pm_book("0.40"), 3.0, 3.3))
+    [row] = stored(store)
+    assert (row["open_leg"], row["close_leg"]) == ("pm", "pm")
+    assert row["open_exchange_at"] == "2026-11-07T12:00:02.000+00:00"
+    assert row["open_received_at"] == "2026-11-07T12:00:02.200+00:00"
+    assert row["other_exchange_at"] == "2026-11-07T12:00:01.000+00:00"
+    assert row["other_received_at"] == "2026-11-07T12:00:01.050+00:00"
+    assert row["close_exchange_at"] == "2026-11-07T12:00:03.000+00:00"
+
+
+def test_sweep_close_has_no_closing_leg():
+    """When a sweep closes an episode, it should leave the closing leg empty."""
+    mon, _, store = setup()
+    mon.on_book("kalshi", kalshi_book("0.40"))
+    mon.on_book("pm", pm_book("0.50"))
+    mon.books[("pm", ETH_P)].invalidate()
+    mon.sweep()
+    [row] = stored(store)
+    assert row["open_leg"] == "pm" and row["close_leg"] is None
+
+
+def test_existing_database_gains_timing_columns(tmp_path):
+    """When an old opportunities table lacks timing columns, it should add them on open."""
+    import sqlite3
+
+    path = tmp_path / "old.db"
+    db = sqlite3.connect(path)
+    db.execute(
+        "CREATE TABLE opportunities (id INTEGER PRIMARY KEY AUTOINCREMENT, kalshi_id TEXT NOT NULL,"
+        " pm_id TEXT NOT NULL, label TEXT NOT NULL, asset TEXT, template TEXT,"
+        " started_at TEXT NOT NULL, ended_at TEXT NOT NULL, duration_s REAL NOT NULL,"
+        " max_cents_per_contract REAL NOT NULL, max_contracts REAL NOT NULL,"
+        " max_net REAL NOT NULL, capital_at_max REAL NOT NULL, annualized_at_max REAL,"
+        " updates INTEGER NOT NULL)"
+    )
+    db.commit()
+    db.close()
+    store = MatchStore(path)
+    cols = {r["name"] for r in store.db.execute("PRAGMA table_info(opportunities)")}
+    assert {"open_leg", "close_exchange_at", "other_received_at"} <= cols
+
+
+def timed_row(open_leg, open_s, close_leg, close_s, net=1.0, delay_s=0.1):
+    """Returns an opportunity row with leg times at T0 plus the given seconds."""
+    at = lambda s: (T0 + timedelta(seconds=s)).isoformat()  # noqa: E731
+    return {
+        "kalshi_id": "k", "pm_id": "p", "label": "L", "asset": "btc", "template": "t",
+        "started_at": at(open_s), "ended_at": at(open_s + 0.5), "duration_s": 0.5,
+        "max_cents_per_contract": 1.0, "max_contracts": 10.0, "max_net": net,
+        "capital_at_max": 9.0, "annualized_at_max": None, "updates": 3,
+        "open_leg": open_leg, "open_exchange_at": at(open_s),
+        "open_received_at": at(open_s + delay_s),
+        "close_leg": close_leg, "close_exchange_at": None if close_s is None else at(close_s),
+        "close_received_at": None if close_s is None else at(close_s + delay_s),
+    }
+
+
+def test_timing_flags_crosses_never_live_on_both_venues():
+    """When the closing leg moved on its exchange before the opening leg, it should flag it."""
+    from moneymaker.opportunities import timing
+
+    rows = [
+        timed_row("kalshi", 10.0, "pm", 9.8, net=5.0),
+        timed_row("kalshi", 20.0, "pm", 22.0, net=2.0),
+        timed_row("pm", 30.0, "pm", 31.0),
+        timed_row("pm", 40.0, None, None),
+    ]
+    t = timing(rows)
+    assert t["timed"] == 3
+    assert t["cross_venue"] == 2
+    assert (t["never_simultaneous"], t["never_simultaneous_net"]) == (1, 5.0)
+    assert t["window_s_median"] == 1.0
+    assert t["feed_delay_ms"]["kalshi"]["median"] == 100.0
+    assert t["feed_delay_ms"]["pm"]["n"] == 5
+
+
+def test_report_shows_timing_only_when_episodes_are_timed():
+    """When rows carry timing, it should print the timing section; otherwise omit it."""
+    timed = summarize([timed_row("kalshi", 10.0, "pm", 9.8)], start=T0.isoformat(),
+                      end=(T0 + timedelta(days=1)).isoformat())
+    assert "never live on both at once" in render_text(timed)
+    untimed = summarize([], start=T0.isoformat(), end=(T0 + timedelta(days=1)).isoformat())
+    assert "Timing" not in render_text(untimed)

@@ -43,7 +43,8 @@ approved pair and records each fee-adjusted opportunity episode in the `opportun
 daily summaries in `data/logs/opportunities-YYYY-MM-DD.{json,md}`; see DESIGN.md §5.4.
 
 `opportunities` prints aligned plain-text tables: headline counts, duration buckets, per asset
-and per template, the top 10 episodes by max $ and the 5 longest. Episodes of the same pair and
+and per template, the top 10 episodes by max $, the 5 longest, and a timing section: how many
+crosses were never live on both venues at once, and each venue's feed delay. Episodes of the same pair and
 direction that restart within `--merge-gap` seconds (default 120) count as one, and merged
 episodes shorter than `--min-seconds` (default 2) are hidden unless `--all` is given.
 
