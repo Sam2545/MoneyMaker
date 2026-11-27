@@ -1,5 +1,6 @@
 #!/bin/bash
-# Installs and manages the moneymaker-monitor systemd service on an Ubuntu VPS. Run with sudo.
+# Installs and manages the moneymaker-monitor service, its nightly database snapshot timer and
+# its heartbeat check timer on an Ubuntu VPS. Run with sudo.
 # The AI discovery pipeline (moneymaker match) is not scheduled; run it manually.
 set -euo pipefail
 
@@ -9,23 +10,29 @@ APP_HOME="/home/$APP_USER"
 REPO="$APP_HOME/MoneyMaker"
 UV="$APP_HOME/.local/bin/uv"
 UV_CACHE="$APP_HOME/.cache/uv"
-UNIT="/etc/systemd/system/$SERVICE.service"
-TEMPLATE="deploy/$SERVICE.service"
+UNIT_DIR="/etc/systemd/system"
 SCRIPT_REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 MONITOR_ARGS="${MONITOR_ARGS:---scope crypto --match btc|bitcoin|eth|sol|xrp}"
 PACKAGES=(git curl ca-certificates openssh-client sqlite3 rsync)
+UNITS=(
+    "$SERVICE.service"
+    moneymaker-backup.service moneymaker-backup.timer
+    moneymaker-healthcheck.service moneymaker-healthcheck.timer
+)
+ENABLED=("$SERVICE.service" moneymaker-backup.timer moneymaker-healthcheck.timer)
 
 usage() {
     cat >&2 <<EOF
 usage: sudo $0 <command>
-  install [SOURCE] [--move]  set up user, uv, repo and service; SOURCE is a git URL or a checkout
-                             path (copied, or moved with --move); omit it if $REPO exists
-  status                     service state and the last 20 journal lines
+  install [SOURCE] [--move]  set up user, uv, repo, service and timers; SOURCE is a git URL or a
+                             checkout path (copied, or moved with --move); omit it if $REPO exists
+  status                     service state, timers, heartbeat, snapshots and 20 journal lines
   logs                       follow the service journal
-  update [PATH]              git pull (or rsync from PATH), uv sync, re-render the unit, restart
-  restart                    restart the service
-  uninstall                  stop, disable and remove the unit; keeps the repo and data
-  render DIR                 write the rendered unit to DIR for inspection (no sudo needed)
+  update [PATH]              git pull (or rsync from PATH), uv sync, re-render units, restart
+  restart                    restart the service and timers
+  backup                     take a database snapshot now
+  uninstall                  stop, disable and remove the units; keeps the repo and data
+  render DIR                 write the rendered units to DIR for inspection (no sudo needed)
 Set MONITOR_ARGS to change the monitor arguments (default: $MONITOR_ARGS).
 EOF
     exit 2
@@ -147,9 +154,9 @@ uv_sync() {
     as_app "$UV" --directory "$REPO" sync --frozen
 }
 
-# Prints the unit from the template in repo $1, filled in with the user, paths and arguments.
+# Prints unit $2 from the templates in repo $1, filled in with the user, paths and arguments.
 render_unit() {
-    local template="$1/$TEMPLATE" unit
+    local template="$1/deploy/$2" unit
     [ -f "$template" ] || die "missing $template"
     case "$MONITOR_ARGS" in
         *[\"\\%\$\']*|*$'\n'*) die "MONITOR_ARGS must not contain quotes, backslashes, % or \$" ;;
@@ -163,36 +170,43 @@ render_unit() {
     printf '%s\n' "$unit"
 }
 
-# Writes the rendered unit to DIR.
+# Writes every rendered unit to DIR.
 render() {
+    local name
     mkdir -p "$1"
-    render_unit "$SCRIPT_REPO" > "$1/$SERVICE.service"
-    echo "$1/$SERVICE.service"
+    for name in "${UNITS[@]}"; do
+        render_unit "$SCRIPT_REPO" "$name" > "$1/$name"
+        echo "$1/$name"
+    done
 }
 
-# Installs the rendered unit if it changed, reloads systemd and enables the service.
-install_unit() {
-    local tmp
+# Installs each rendered unit that changed, reloads systemd and enables the service and timers.
+install_units() {
+    local name dest tmp changed=0
     tmp="$(mktemp)"
-    render_unit "$REPO" > "$tmp"
-    if cmp -s "$tmp" "$UNIT"; then
-        say "$UNIT is up to date"
-        rm -f "$tmp"
-    else
-        say "writing $UNIT"
-        install -m 644 "$tmp" "$UNIT"
-        rm -f "$tmp"
-    fi
-    systemctl daemon-reload
-    systemctl enable --quiet "$SERVICE"
-    say "enabled $SERVICE (starts at boot)"
+    for name in "${UNITS[@]}"; do
+        dest="$UNIT_DIR/$name"
+        render_unit "$REPO" "$name" > "$tmp"
+        if cmp -s "$tmp" "$dest"; then
+            say "$dest is up to date"
+        else
+            say "writing $dest"
+            install -m 644 "$tmp" "$dest"
+            changed=1
+        fi
+    done
+    rm -f "$tmp"
+    [ "$changed" -eq 0 ] || systemctl daemon-reload
+    systemctl enable --quiet "${ENABLED[@]}"
+    say "enabled ${ENABLED[*]} (start at boot)"
 }
 
-# Restarts the service when .env exists, otherwise prints the files to copy.
+# Restarts the service and timers when .env exists, otherwise prints the files to copy.
 start_if_ready() {
     if [ -f "$REPO/.env" ]; then
         systemctl restart "$SERVICE"
-        say "started $SERVICE; check it with: sudo $0 status"
+        systemctl restart moneymaker-backup.timer moneymaker-healthcheck.timer
+        say "started $SERVICE and its timers; check it with: sudo $0 status"
     else
         say "not starting: $REPO/.env is missing. Copy these from your laptop, then run"
         say "'sudo $0 restart':"
@@ -221,13 +235,20 @@ install() {
     place_repo "$src" "$move"
     setup_dirs
     uv_sync
-    install_unit
+    install_units
     start_if_ready
 }
 
-# Shows the service state and the last 20 journal lines.
+# Shows the service state, timer schedule, heartbeat, snapshots and the last 20 journal lines.
 status() {
     systemctl status "$SERVICE" --no-pager || true
+    echo "--- timers"
+    systemctl list-timers moneymaker-backup.timer moneymaker-healthcheck.timer \
+        --no-pager --no-legend || true
+    echo "--- heartbeat"
+    sudo -u "$APP_USER" "$REPO/scripts/healthcheck.sh" || true
+    echo "--- snapshots"
+    ls -lh "$REPO/data/backups" 2>/dev/null | tail -n 5 || echo "none yet"
     echo "--- last 20 journal lines"
     journalctl -u "$SERVICE" -n 20 --no-pager || true
 }
@@ -247,17 +268,20 @@ update() {
     fi
     setup_dirs
     uv_sync
-    install_unit
+    install_units
     start_if_ready
 }
 
-# Stops, disables and removes the unit, leaving the repo and data in place.
+# Stops, disables and removes every unit, leaving the repo and data in place.
 uninstall() {
-    systemctl disable --now "$SERVICE" >/dev/null 2>&1 || true
-    rm -f "$UNIT"
+    local name
+    for name in "${UNITS[@]}"; do
+        systemctl disable --now "$name" >/dev/null 2>&1 || true
+        rm -f "$UNIT_DIR/$name"
+        systemctl reset-failed "$name" >/dev/null 2>&1 || true
+    done
     systemctl daemon-reload
-    systemctl reset-failed "$SERVICE" >/dev/null 2>&1 || true
-    say "removed $SERVICE; $REPO and its data are untouched"
+    say "removed ${UNITS[*]}; $REPO and its data are untouched"
 }
 
 cmd="${1:-}"
@@ -267,7 +291,9 @@ case "$cmd" in
     status) require_root "$cmd"; status ;;
     logs) require_root "$cmd"; journalctl -u "$SERVICE" -f -n 50 ;;
     update) require_root "$cmd"; [ $# -le 1 ] || usage; update "$@" ;;
-    restart) require_root "$cmd"; systemctl restart "$SERVICE"; say "restarted $SERVICE" ;;
+    restart) require_root "$cmd"; start_if_ready ;;
+    backup) require_root "$cmd"; as_app "$REPO/scripts/backup_db.sh" \
+        --db "$REPO/data/matches.db" --dest "$REPO/data/backups" ;;
     uninstall) require_root "$cmd"; uninstall ;;
     render) [ $# -eq 1 ] || usage; render "$1" ;;
     *) usage ;;

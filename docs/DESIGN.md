@@ -360,7 +360,7 @@ whose close times have not passed. Implications are priced only in their safe di
   and the 5 longest. The JSON keeps the raw-row keys (`episodes`, `total_net`, `median_net`,
   `by_asset`, `by_template`, `durations`, `top`) and adds `merged_*` and `filtered_*` keys; the
   `.md` wraps the plain-text report in a code block.
-- A `monitor.heartbeat` line every minute logs pairs, synced books, open and closed episodes,
+- A `monitor.heartbeat` line every minute (also written as a timestamp to `data/monitor.heartbeat`) logs pairs, synced books, open and closed episodes,
   book updates in the last minute and pricing errors. A failing pair is logged and skipped.
 
 ## 6. Phase 4 — paper trading

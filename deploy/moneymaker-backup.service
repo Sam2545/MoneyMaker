@@ -1,0 +1,28 @@
+# Rendered by scripts/setup_vps.sh into /etc/systemd/system/moneymaker-backup.service.
+# Triggered by moneymaker-backup.timer; override retention with
+# `sudo systemctl edit moneymaker-backup` and [Service] Environment="MONEYMAKER_BACKUP_KEEP=30".
+[Unit]
+Description=MoneyMaker match database snapshot
+After=moneymaker-monitor.service
+
+[Service]
+Type=oneshot
+User=@USER@
+Group=@USER@
+WorkingDirectory=@REPO@
+Environment="PATH=/usr/local/bin:/usr/bin:/bin"
+Environment="MONEYMAKER_BACKUP_KEEP=14"
+ExecStart=@REPO@/scripts/backup_db.sh
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=moneymaker-backup
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=full
+ProtectHome=read-only
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX
+ReadWritePaths=@REPO@/data

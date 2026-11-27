@@ -40,6 +40,14 @@ log = structlog.get_logger(__name__)
 MONITORED = ("approved_equivalent", "auto_approved", "approved_implication")
 HEARTBEAT_S = 60.0
 TICK_S = 1.0
+HEARTBEAT_PATH = Path("data/monitor.heartbeat")
+
+
+def touch_heartbeat(path: Path, when: datetime) -> None:
+    """Writes when to path as an ISO timestamp, ignoring filesystem errors."""
+    with contextlib.suppress(OSError):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(f"{iso(when)}\n")
 STREAM_RETRY_S = 5.0
 
 BookKey = tuple[str, str]
@@ -267,6 +275,7 @@ async def run_monitor(
     settings: Settings | None = None,
     min_edge_per_contract: Decimal = Decimal("0.002"),
     log_dir: Path = Path("data/logs"),
+    heartbeat_path: Path | None = HEARTBEAT_PATH,
 ) -> Monitor:
     """Runs the template matcher every refresh_min minutes and monitors approved pairs live.
 
@@ -329,6 +338,8 @@ async def run_monitor(
                          open_episodes=len(monitor.tracker.open),
                          episodes_closed=monitor.tracker.closed,
                          updates=monitor.updates - last_updates, errors=monitor.errors)
+                if heartbeat_path is not None:
+                    touch_heartbeat(heartbeat_path, tick)
                 last_updates = monitor.updates
                 next_beat = now + HEARTBEAT_S
             await asyncio.sleep(TICK_S)

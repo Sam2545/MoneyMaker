@@ -1,0 +1,12 @@
+# Rendered by scripts/setup_vps.sh into /etc/systemd/system/moneymaker-backup.timer.
+[Unit]
+Description=Daily MoneyMaker match database snapshot
+
+[Timer]
+OnCalendar=*-*-* 03:17:00
+RandomizedDelaySec=600
+Persistent=true
+Unit=moneymaker-backup.service
+
+[Install]
+WantedBy=timers.target
