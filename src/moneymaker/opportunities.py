@@ -37,6 +37,20 @@ def is_live(edge: Edge | None) -> bool:
     return edge is not None and edge.contracts >= ONE and edge.net > 0
 
 
+@dataclass(frozen=True)
+class LegTiming:
+    """One leg's book times: the venue's own timestamp and when this process received it."""
+
+    venue: str
+    exchange_at: datetime | None
+    received_at: datetime | None
+
+
+def iso_or_none(t: datetime | None) -> str | None:
+    """Returns iso(t), or None when t is None."""
+    return None if t is None else iso(t)
+
+
 @dataclass
 class Episode:
     """One continuous stretch during which a pair had a sized, profitable edge."""
@@ -54,6 +68,9 @@ class Episode:
     capital_at_max: float = 0.0
     annualized_at_max: float | None = None
     updates: int = 0
+    open_leg: LegTiming | None = None
+    other_leg: LegTiming | None = None
+    close_leg: LegTiming | None = None
 
     def observe(self, edge: Edge) -> None:
         """Folds one live edge into the episode's maxima."""
@@ -80,6 +97,14 @@ class Episode:
             "max_contracts": self.max_contracts, "max_net": self.max_net,
             "capital_at_max": self.capital_at_max, "annualized_at_max": self.annualized_at_max,
             "updates": self.updates,
+            "open_leg": self.open_leg.venue if self.open_leg else None,
+            "open_exchange_at": iso_or_none(self.open_leg and self.open_leg.exchange_at),
+            "open_received_at": iso_or_none(self.open_leg and self.open_leg.received_at),
+            "other_exchange_at": iso_or_none(self.other_leg and self.other_leg.exchange_at),
+            "other_received_at": iso_or_none(self.other_leg and self.other_leg.received_at),
+            "close_leg": self.close_leg.venue if self.close_leg else None,
+            "close_exchange_at": iso_or_none(self.close_leg and self.close_leg.exchange_at),
+            "close_received_at": iso_or_none(self.close_leg and self.close_leg.received_at),
         }
 
 
@@ -97,24 +122,34 @@ class EpisodeTracker:
 
     def update(
         self, key: PairKey, edge: Edge | None, now: datetime, *, asset: str = "",
-        template: str = "",
+        template: str = "", trigger: LegTiming | None = None, other: LegTiming | None = None,
     ) -> None:
-        """Feeds one recomputed edge for a pair, opening, extending or closing its episode."""
+        """Feeds one recomputed edge for a pair, opening, extending or closing its episode.
+
+        trigger is the leg whose book update caused this evaluation and other is the opposite
+        leg; both are recorded when the episode opens, and trigger when it closes.
+        """
         episode = self.open.get(key)
         if is_live(edge):
             assert edge is not None
             if episode is None:
-                episode = self.open[key] = Episode(key[0], key[1], asset, template, now)
+                episode = self.open[key] = Episode(
+                    key[0], key[1], asset, template, now, open_leg=trigger, other_leg=other
+                )
             episode.observe(edge)
         elif episode is not None:
-            self.close(key, now)
+            self.close(key, now, trigger)
 
-    def close(self, key: PairKey, now: datetime) -> None:
-        """Closes a pair's open episode at now, if any, and hands it to the callback."""
+    def close(self, key: PairKey, now: datetime, trigger: LegTiming | None = None) -> None:
+        """Closes a pair's open episode at now, if any, and hands it to the callback.
+
+        trigger is the leg update that ended it, or None for sweeps, dropped pairs and shutdown.
+        """
         episode = self.open.pop(key, None)
         if episode is None:
             return
         episode.ended_at = now
+        episode.close_leg = trigger
         self.closed += 1
         self.on_close(episode)
 
@@ -235,7 +270,80 @@ def summarize(
         "filtered_by_template": group_counts(merged, kept, "template"),
         "filtered_top": sorted(kept, key=lambda r: r["max_net"], reverse=True)[:TOP_N],
         "filtered_longest": sorted(kept, key=lambda r: r["duration_s"], reverse=True)[:LONGEST_N],
+        "timing": timing(rows),
     }
+
+
+def percentile(values: list[float], q: float) -> float:
+    """Returns the q-quantile (0 to 1) of non-empty values by nearest rank."""
+    ordered = sorted(values)
+    return ordered[min(len(ordered) - 1, max(0, round(q * (len(ordered) - 1))))]
+
+
+def timing(rows: Iterable[dict[str, Any]]) -> dict[str, Any]:
+    """Summarizes leg timestamps of raw episodes.
+
+    An episode is timed when both its opening and closing updates carry exchange times. Its
+    exchange window is the closing update's exchange time minus the opening one's; a negative
+    window on a cross-venue close means the closing leg had already moved on its exchange before
+    the opening leg moved on its own, so both prices were never live at once. Feed delay is
+    receive time minus exchange time per venue, which includes clock offset between machines.
+    """
+    delays: dict[str, list[float]] = defaultdict(list)
+    windows: list[float] = []
+    cross = never = 0
+    never_net = 0.0
+    for r in rows:
+        for leg, exch, recv in (
+            (r.get("open_leg"), r.get("open_exchange_at"), r.get("open_received_at")),
+            (r.get("close_leg"), r.get("close_exchange_at"), r.get("close_received_at")),
+        ):
+            if leg and exch and recv:
+                delays[leg].append((parse_iso(recv) - parse_iso(exch)).total_seconds() * 1000)
+        if not (r.get("open_exchange_at") and r.get("close_exchange_at") and r.get("close_leg")):
+            continue
+        window = (parse_iso(r["close_exchange_at"]) - parse_iso(r["open_exchange_at"]))
+        windows.append(window.total_seconds())
+        if r["close_leg"] != r.get("open_leg"):
+            cross += 1
+            if window.total_seconds() < 0:
+                never += 1
+                never_net += r["max_net"]
+    return {
+        "timed": len(windows),
+        "cross_venue": cross,
+        "never_simultaneous": never,
+        "never_simultaneous_net": round(never_net, 4),
+        "window_s_median": round(statistics.median(windows), 3) if windows else None,
+        "feed_delay_ms": {
+            venue: {"n": len(v), "median": round(statistics.median(v), 1),
+                    "p90": round(percentile(v, 0.9), 1)}
+            for venue, v in sorted(delays.items())
+        },
+    }
+
+
+def timing_lines(t: dict[str, Any]) -> list[str]:
+    """Renders a timing summary from timing, or nothing when no episode is timed."""
+    if not t["timed"]:
+        return []
+    lines = [
+        "",
+        "Timing (raw episodes with exchange times on both the opening and closing update)",
+        f"{t['timed']:,} timed · {t['cross_venue']:,} closed by the other venue · "
+        f"{t['never_simultaneous']:,} never live on both at once "
+        f"(${t['never_simultaneous_net']:,.2f} max $)",
+        f"Median exchange-time window: {t['window_s_median']:g} s",
+    ]
+    if t["feed_delay_ms"]:
+        lines += render_table(
+            ["Venue", "Samples", "Median ms", "p90 ms"],
+            [[v, f"{d['n']:,}", f"{d['median']:,.1f}", f"{d['p90']:,.1f}"]
+             for v, d in t["feed_delay_ms"].items()],
+            right={1, 2, 3},
+        )
+        lines.append("feed delay: receive time minus exchange time, including clock offset")
+    return lines
 
 
 def durations(rows: Iterable[dict[str, Any]]) -> dict[str, int]:
@@ -344,6 +452,7 @@ def render_text(summary: dict[str, Any], *, show_all: bool = False) -> str:
         "",
         f"Longest {LONGEST_N} by duration",
         *episode_table(s["filtered_longest"]),
+        *timing_lines(s.get("timing") or timing([])),
     ]
     return "\n".join(lines) + "\n"
 

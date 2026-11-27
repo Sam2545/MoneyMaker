@@ -25,6 +25,7 @@ from moneymaker.opportunities import (
     MIN_SECONDS,
     Episode,
     EpisodeTracker,
+    LegTiming,
     iso,
     local_day_bounds,
     render_text,
@@ -100,6 +101,13 @@ def load_pairs(store: MatchStore, run: TemplateRun, now: datetime) -> list[Monit
 StreamFactory = Callable[[Sequence[str]], AsyncIterator[OrderBook]]
 
 
+def leg_timing(venue: str, book: OrderBook | None) -> LegTiming | None:
+    """Returns the book's exchange and receive times for venue, or None without a book."""
+    if book is None:
+        return None
+    return LegTiming(venue, book.exchange_ts, book.updated_ts)
+
+
 class Monitor:
     """Streams both legs of every approved pair and records fee-adjusted opportunity episodes."""
 
@@ -159,12 +167,13 @@ class Monitor:
         self.updates += 1
         self.books[key] = book
         for pair in self.by_book.get(key, ()):
-            self.evaluate(pair)
+            self.evaluate(pair, trigger=venue)
 
-    def evaluate(self, pair: MonitoredPair) -> Edge | None:
+    def evaluate(self, pair: MonitoredPair, trigger: str | None = None) -> Edge | None:
         """Recomputes a pair's edge from its synced books and feeds it to the episode tracker.
 
-        Errors are logged and close the pair's episode.
+        trigger is the venue whose book update caused the evaluation. Errors are logged and
+        close the pair's episode.
         """
         now = self.clock()
         kb = self.books.get(("kalshi", pair.kalshi.venue_market_id))
@@ -179,7 +188,12 @@ class Monitor:
                     self.errors += 1
                     log.warning("monitor.price_error", pair=pair.key, error=repr(exc)[:200])
             self.evaluations += 1
-        self.tracker.update(pair.key, edge, now, asset=pair.asset, template=pair.template)
+        legs = {"kalshi": leg_timing("kalshi", kb), "pm": leg_timing("pm", pb)}
+        other = {"kalshi": "pm", "pm": "kalshi"}.get(trigger or "")
+        self.tracker.update(
+            pair.key, edge, now, asset=pair.asset, template=pair.template,
+            trigger=legs.get(trigger or ""), other=legs.get(other or ""),
+        )
         return edge
 
     def sweep(self) -> None:

@@ -347,6 +347,14 @@ whose close times have not passed. Implications are priced only in their safe di
   closed episode is a row in `opportunities`: pair, direction label, asset, template, start,
   end, duration, max ¢/contract, max contracts, max net $, and capital and annualized return at
   the max-net update.
+- **Leg timing.** Each episode stores the leg whose update opened it (`open_leg`), that
+  update's exchange and receive times, the other leg's book times at that moment, and the leg
+  and times of the update that closed it (none for sweeps, dropped pairs and shutdown). Kalshi
+  exchange times come from delta `ts_ms`, PM US from snapshot `transactTime`. The report's
+  timing section counts episodes closed by the other venue whose closing update has an earlier
+  exchange time than the opening one: the two prices were never live at once, so the cross was
+  only visible because one feed lagged. It also prints the median exchange-time window and
+  each venue's feed delay (receive minus exchange time, including clock offset).
 - `data/logs/opportunities-YYYY-MM-DD.{json,md}` summarize episodes that started on that local
   date. Today's files are rewritten after every refresh and at shutdown, and the previous day's
   at midnight. `moneymaker opportunities [--hours 24] [--merge-gap 120] [--min-seconds 2]

@@ -84,15 +84,27 @@ CREATE TABLE IF NOT EXISTS opportunities (
     max_net REAL NOT NULL,
     capital_at_max REAL NOT NULL,
     annualized_at_max REAL,
-    updates INTEGER NOT NULL
+    updates INTEGER NOT NULL,
+    open_leg TEXT,
+    open_exchange_at TEXT,
+    open_received_at TEXT,
+    other_exchange_at TEXT,
+    other_received_at TEXT,
+    close_leg TEXT,
+    close_exchange_at TEXT,
+    close_received_at TEXT
 );
 CREATE INDEX IF NOT EXISTS opportunities_started ON opportunities (started_at);
 """
 
+TIMING_FIELDS = (
+    "open_leg", "open_exchange_at", "open_received_at", "other_exchange_at",
+    "other_received_at", "close_leg", "close_exchange_at", "close_received_at",
+)
 OPPORTUNITY_FIELDS = (
     "kalshi_id", "pm_id", "label", "asset", "template", "started_at", "ended_at", "duration_s",
     "max_cents_per_contract", "max_contracts", "max_net", "capital_at_max", "annualized_at_max",
-    "updates",
+    "updates", *TIMING_FIELDS,
 )
 
 APPROVED = ("approved_equivalent", "approved_implication")
@@ -128,6 +140,7 @@ class MatchStore:
         self.db.row_factory = sqlite3.Row
         self.db.execute("PRAGMA journal_mode=WAL")
         self.db.executescript(SCHEMA)
+        self._add_missing_columns("opportunities", TIMING_FIELDS)
 
     def close(self) -> None:
         """Closes the database connection."""
@@ -328,12 +341,20 @@ class MatchStore:
             for r in self.db.execute("SELECT status, COUNT(*) AS n FROM matches GROUP BY status")
         }
 
+    def _add_missing_columns(self, table: str, columns: tuple[str, ...]) -> None:
+        """Adds each nullable TEXT column in columns that table does not have yet."""
+        have = {r["name"] for r in self.db.execute(f"PRAGMA table_info({table})")}
+        for column in columns:
+            if column not in have:
+                self.db.execute(f"ALTER TABLE {table} ADD COLUMN {column} TEXT")
+        self.db.commit()
+
     def add_opportunity(self, row: dict[str, Any]) -> None:
         """Stores one closed opportunity episode given as a dict of OPPORTUNITY_FIELDS."""
         self.db.execute(
             f"INSERT INTO opportunities ({', '.join(OPPORTUNITY_FIELDS)}) "
             f"VALUES ({', '.join('?' * len(OPPORTUNITY_FIELDS))})",
-            [row[k] for k in OPPORTUNITY_FIELDS],
+            [row.get(k) for k in OPPORTUNITY_FIELDS],
         )
         self.db.commit()
 
